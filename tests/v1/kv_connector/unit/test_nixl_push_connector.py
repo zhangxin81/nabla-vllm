@@ -650,6 +650,39 @@ class TestProgressivePushWorker:
         w._poll_progressive_transfers()
         assert w._progressive_done_outbox.get_nowait() == "req-progressive"
 
+    def test_empty_terminal_update_sends_completion_notification(self):
+        w = _StubWriterWorker.fresh()
+        batches = self._record_batches(w)
+        w.tp_mappings = {
+            "decode-engine": MagicMock(all_source_ranks=[0]),
+        }
+        w._remote_agents = {"decode-engine": {(0, 0): "decode-agent-0"}}
+        registration = _registration_data(
+            "req-empty-terminal",
+            local_block_ids=((100, 101),),
+            progressive_push=True,
+        )
+        w._handle_push_reg_notif(
+            PUSH_REG_NOTIF_PREFIX + msgspec.msgpack.encode(registration)
+        )
+
+        w._handle_progressive_update(
+            "req-empty-terminal",
+            PushBlockUpdate(block_ids=([1, 2],)),
+        )
+        assert batches == [(([1, 2],), ([100, 101],), False)]
+        w._poll_progressive_transfers()
+
+        w._handle_progressive_update(
+            "req-empty-terminal",
+            PushBlockUpdate(block_ids=([],), is_final=True),
+        )
+
+        w.nixl_wrapper.send_notif.assert_called_once_with(
+            "decode-agent-0", notif_msg=b"req-empty-terminal:1"
+        )
+        assert w._progressive_done_outbox.get_nowait() == "req-empty-terminal"
+
     def test_prefix_hit_skips_cached_source_blocks_before_early_write(self):
         w = _StubWriterWorker.fresh()
         batches = self._record_batches(w)
@@ -740,6 +773,29 @@ class TestProgressivePushWorker:
         assert "req-preempt" not in w._progressive_states
         assert "req-preempt" in w._pending_d_registrations
         assert "req-preempt" in w._progressive_fallbacks
+
+    def test_preemption_fence_timeout_fails_closed(self):
+        w = _StubWriterWorker.fresh()
+        w._push_writer_thread = MagicMock()
+        event = MagicMock()
+        event.wait.return_value = False
+
+        with (
+            patch(
+                "vllm.distributed.kv_transfer.kv_connector.v1.nixl."
+                "push_worker.threading.Event",
+                return_value=event,
+            ),
+            patch(
+                "vllm.distributed.kv_transfer.kv_connector.v1.nixl."
+                "push_worker._PROGRESSIVE_FENCE_TIMEOUT_S",
+                0.0,
+            ),
+            pytest.raises(RuntimeError, match="refusing to reuse source blocks"),
+        ):
+            w._fence_progressive_requests({"req-timeout"})
+
+        event.wait.assert_called_once_with(timeout=0.0)
 
     def test_cancellation_fence_discards_registration(self):
         w = _StubWriterWorker.fresh()

@@ -74,6 +74,7 @@ logger = init_logger(__name__)
 # main thread (start_load_kv / get_finished). Smaller -> lower latency
 # while active, slightly more CPU.
 _PUSH_WRITER_POLL_INTERVAL_MS = 1.0
+_PROGRESSIVE_FENCE_TIMEOUT_S = 60.0
 
 
 @dataclass
@@ -221,11 +222,22 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
         events = []
         for req_id in request_ids:
             event = threading.Event()
-            events.append(event)
+            events.append((req_id, event))
             self._progressive_fence_inbox.put((req_id, event, retain_registration))
         self._push_writer_wake.set()
-        for event in events:
-            event.wait()
+        deadline = time.monotonic() + _PROGRESSIVE_FENCE_TIMEOUT_S
+        for req_id, event in events:
+            timeout = max(0.0, deadline - time.monotonic())
+            if not event.wait(timeout=timeout):
+                logger.error(
+                    "Timed out fencing progressive push for %s after %.1fs",
+                    req_id,
+                    _PROGRESSIVE_FENCE_TIMEOUT_S,
+                )
+                raise RuntimeError(
+                    "Progressive push fence timed out; refusing to reuse "
+                    f"source blocks for {req_id}"
+                )
 
     def start_load_kv(self, metadata: NixlConnectorMetadata):
         """Pre-process metadata; defer NIXL ops to the writer thread."""
@@ -648,6 +660,15 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
             state.failed = True
             return
         if not state.ready_block_ids:
+            if not state.final_received:
+                return
+            if not self._progressive_handshake_ready(state):
+                return
+            if not self._send_progressive_completion(state):
+                state.failed = True
+                return
+            self._progressive_states.pop(get_base_request_id(state.request_id), None)
+            self._progressive_done_outbox.put(state.request_id)
             return
         if not self._progressive_handshake_ready(state):
             return
@@ -671,6 +692,28 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
         del state.remaining_block_ids[:count]
         state.in_flight = handles
         state.final_in_flight = completes_request
+
+    def _send_progressive_completion(self, state: _ProgressivePushState) -> bool:
+        assert state.registration is not None
+        registration = state.registration
+        engine_id = registration["decode_engine_id"]
+        agents = self._remote_agents.get(engine_id, {})
+        notif_msg = f"{registration['request_id']}:{self.world_size}".encode()
+        try:
+            for remote_rank in self.tp_mappings[engine_id].all_source_ranks:
+                self.nixl_wrapper.send_notif(
+                    agents[(0, remote_rank)], notif_msg=notif_msg
+                )
+        except Exception as error:
+            self._log_failure(
+                failure_type="progressive_push_completion_notif_failed",
+                req_id=state.request_id,
+                error=error,
+                dst_engine_id=engine_id,
+            )
+            self.xfer_stats.record_failed_notification()
+            return False
+        return True
 
     def _progressive_handshake_ready(self, state: _ProgressivePushState) -> bool:
         assert state.registration is not None
