@@ -793,5 +793,5 @@ def _warmup_kernels(
         model_runner.speculator.reset_state()
     model_runner.kv_connector.set_disabled(False)
     if model_runner.kv_block_zeroer is not None:
-        model_runner.kv_block_zeroer.zero_block_ids([0])
+        model_runner.kv_block_zeroer.warmup(model_runner.kv_cache_config.num_blocks)
     torch.accelerator.synchronize()

@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from tests.v1.core.utils import full_layer, new_kv_cache_group, sliding_window_layer
-from vllm.config import CacheConfig
+from vllm.config import CacheConfig, VllmConfig
 from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.core.kv_cache_manager import KVCacheManager
@@ -616,6 +616,14 @@ class TestSlidingWindowBucketCap:
         assert sorted(n for g in swa_groups for n in g.layer_names) == sorted(
             f"layers.{i}.swa" for i in range(43)
         )
+
+    def test_sliding_window_groups_fill_the_stride_alignment_padding(self):
+        """A 128 KiB stride alignment rounds the 160 KiB MLA block up to
+        256 KiB; the sliding-window groups must fill that block rather than
+        split at the unrounded 160 KiB."""
+        config = VllmConfig()
+        config.cache_config.kv_cache_layout = "BLHNC"
+        config.scheduler_config.disable_hybrid_kv_cache_manager = False
 
 
 class TestDensePacking:

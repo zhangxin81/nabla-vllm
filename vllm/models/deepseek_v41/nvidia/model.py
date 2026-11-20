@@ -94,7 +94,10 @@ from vllm.models.deepseek_v41.nvidia.flashinfer_sparse import (
     DeepseekV4FlashInferMLAAttention,
     DeepseekV4FlashInferSM120Attention,
 )
-from vllm.models.deepseek_v41.nvidia.flashmla import DeepseekV4FlashMLAAttention
+from vllm.models.deepseek_v41.nvidia.flashmla import (
+    DeepseekV4FlashMLAAttention,
+    PhysicalSelectionCache,
+)
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.utils.math_utils import cdiv
@@ -429,6 +432,12 @@ class DeepseekV4DecoderLayer(nn.Module):
                 # forward keeps the separate reduce-scatter below.
                 self.attn.bind_gemm_rs()
         self.attn.shard_fused_wqa_wkv = _shard_fused_wqa_wkv(vllm_config)
+        self.attn.sequence_parallel_input = (
+            self.use_sequence_parallel
+            and vllm_config.lora_config is None
+            and not vllm_config.parallel_config.use_ubatching
+            and not envs.VLLM_BATCH_INVARIANT
+        )
         self.ffn = DeepseekV4MoE(
             vllm_config,
             prefix=f"{prefix}.ffn",
@@ -736,7 +745,9 @@ class DeepseekV4DecoderLayer(nn.Module):
             if capture_previous_aux:
                 previous_aux = aux
 
-        if self.use_sequence_parallel:
+        if self.use_sequence_parallel and not self.attn.use_sequence_parallel_input(
+            positions.shape[0]
+        ):
             x = sp_all_gather(x)[: positions.shape[0]]
 
         x = self.attn(positions, x, None)
@@ -1018,6 +1029,29 @@ class DeepseekV4Model(nn.Module, EagleModelMixin):
             ),
             prefix=f"{prefix}.layers",
         )
+        if (
+            not self.parallel_config.use_ubatching
+            and self.parallel_config.prefill_context_parallel_size == 1
+            and self.parallel_config.decode_context_parallel_size == 1
+        ):
+            flashmla_layers = [
+                layer.attn
+                for layer in islice(self.layers, self.start_layer, self.end_layer)
+                if isinstance(layer, DeepseekV4DecoderLayer)
+                and isinstance(layer.attn, DeepseekV4FlashMLAAttention)
+            ]
+            if flashmla_layers:
+                rows = min(
+                    vllm_config.scheduler_config.max_num_seqs,
+                    vllm_config.scheduler_config.max_num_batched_tokens,
+                )
+                selection_cache = PhysicalSelectionCache(
+                    rows,
+                    config.index_topk,
+                    torch.device("cuda", torch.accelerator.current_device_index()),
+                )
+                for attn in flashmla_layers:
+                    attn.physical_selection_cache = selection_cache
         if self.pipeline_relay is not None:
             self.pipeline_relay.configure(
                 self.layers[self.start_layer].attn, vllm_config

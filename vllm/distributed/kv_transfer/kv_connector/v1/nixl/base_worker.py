@@ -213,6 +213,7 @@ class NixlBaseConnectorWorker:
         pairs: tuple[Sequence[int], Sequence[int]],
         region_num_blocks: list[int] | None = None,
         ssm_regions: Sequence[int] | None = None,
+        ple_region: int | None = None,
     ) -> np.ndarray:
         """Compute NIXL descriptor IDs for given block IDs.
 
@@ -221,7 +222,8 @@ class NixlBaseConnectorWorker:
         region-mapped transfers).
 
         `ssm_regions` lists this side's SSM regions in the order its SSM
-        descriptors are built; it defaults to the local ones.
+        descriptors are built, and `ple_region` is its PLE region; both default
+        to the local ones.
         """
         num_ssm_regions = 0
         if self._has_mamba:
@@ -236,6 +238,7 @@ class NixlBaseConnectorWorker:
                 * ssm_regions_per_layer
             )
 
+        native_region_counts = region_num_blocks
         num_blocks = dst_num_blocks
         if block_size_ratio is not None:
             num_blocks = int(num_blocks * block_size_ratio)
@@ -275,13 +278,20 @@ class NixlBaseConnectorWorker:
             ssm_regions = self._ssm_region_indices or range(
                 len(self.block_len_per_layer)
             )
+            ple_region = self._ple_region_index
+        if native_region_counts is None:
+            native_region_counts = [logical_blocks] * len(region_num_blocks)
+        ssm_counts = np.asarray(
+            [native_region_counts[r] for r in ssm_regions], dtype=np.int64
+        )
+        ssm_offsets = np.cumsum([0, *np.repeat(ssm_counts, ssm_regions_per_layer)[:-1]])
         ssm_slot = {region: slot for slot, region in enumerate(ssm_regions)}
         # NOTE (NickLucche) SSM and Attention block regions can be exchanged
         # arbitrarily by manager. Therefore, descs are laid out as:
         #   [descs_fa (all regions) | descs_ssm (all SSM regions) | desc_ple].
         # num_fa_descs offset must be computed per-engine since P and D can
         # have different num_blocks (and thus different FA desc counts).
-        num_ssm_descs = len(ssm_regions) * ssm_regions_per_layer
+        num_ssm_entries = int(ssm_counts.sum()) * ssm_regions_per_layer
         pair_regions = np.asarray(pairs[0], dtype=np.int64)
         pair_keys = np.asarray(pairs[1], dtype=np.int64)
         sub_descs = np.arange(ssm_regions_per_layer, dtype=np.int64)
@@ -295,20 +305,20 @@ class NixlBaseConnectorWorker:
             if _is_attention_spec(spec_type):
                 desc_ids = region_offsets[group_regions][:, None] + blocks[None, :]
             elif _is_ssm_spec(spec_type):
-                if i == self._ple_group_index:
-                    ssm_desc_ids = np.array([num_ssm_descs], dtype=np.int64)
-                else:
-                    # Each SSM region owns ssm_regions_per_layer consecutive
-                    # descs, in ssm_regions order.
-                    slots = np.array([ssm_slot[r] for r in group_regions.tolist()])
-                    ssm_desc_ids = (
-                        slots[:, None] * ssm_regions_per_layer + sub_descs
-                    ).ravel()
-                desc_ids = (
-                    ssm_desc_ids[:, None] * logical_blocks
-                    + blocks[None, :]
-                    + num_fa_descs
-                )
+                # Each SSM region owns ssm_regions_per_layer consecutive descs,
+                # in ssm_regions order, and the PLE region the one after them.
+                # The PLE group can hold SSM state too (Qwen4Exp's GDN).
+                regions = group_regions.tolist()
+                has_ple = i == self._ple_group_index and ple_region in regions
+                if has_ple:
+                    regions.remove(ple_region)
+                slots = np.array([ssm_slot[r] for r in regions], dtype=np.int64)
+                ssm_desc_ids = ssm_offsets[
+                    slots[:, None] * ssm_regions_per_layer + sub_descs
+                ].ravel()
+                if has_ple:
+                    ssm_desc_ids = np.append(ssm_desc_ids, num_ssm_entries)
+                desc_ids = ssm_desc_ids[:, None] + blocks[None, :] + num_fa_descs
             else:
                 raise ValueError(
                     f"Unknown spec type {self._group_spec_types[i]} at index {i}"
@@ -353,7 +363,9 @@ class NixlBaseConnectorWorker:
             else 0
         )
         sharded_desc_end = num_descs - (
-            self._logical_num_blocks if self._ple_region_index is not None else 0
+            self.region_num_blocks[self._ple_region_index]
+            if self._ple_region_index is not None
+            else 0
         )
         assert num_fa_descs <= sharded_desc_end
 
@@ -693,7 +705,7 @@ class NixlBaseConnectorWorker:
         ssm_pairs: list[tuple[int, int]] = []
         ple_regions: set[int] = set()
         for remote, local, group in zip(pairs.remote, pairs.local, pairs.group):
-            if group == self._ple_group_index:
+            if group == self._ple_group_index and local == self._ple_region_index:
                 ple_regions.add(remote)
             elif _is_ssm_spec(self._group_spec_types[group]):
                 ssm_pairs.append((ssm_slot[local], remote))
@@ -818,22 +830,19 @@ class NixlBaseConnectorWorker:
         )
         self._ple_group_index: int | None = None
         if self._is_csa_linear:
+            # The group of each TP-replicated PLE state, which may hold SSM
+            # state too.
             ple_groups = [
-                (index, group)
+                index
                 for index, group in enumerate(kv_cache_config.kv_cache_groups)
-                if group.layer_names
-                and all(
-                    isinstance(spec, MambaSpec) and spec.tp_replicated
-                    for spec in group.kv_cache_specs.values()
-                )
+                for spec in group.kv_cache_specs.values()
+                if isinstance(spec, MambaSpec) and spec.tp_replicated
             ]
-            if len(ple_groups) > 1 or any(
-                len(group.layer_names) != 1 for _, group in ple_groups
-            ):
+            if len(ple_groups) > 1:
                 raise ValueError(
                     "CSA-linear NIXL requires at most one PLE cache owner."
                 )
-            self._ple_group_index = ple_groups[0][0] if ple_groups else None
+            self._ple_group_index = ple_groups[0] if ple_groups else None
 
         if self._has_mamba:
             assert self._is_hma_required
@@ -1191,8 +1200,8 @@ class NixlBaseConnectorWorker:
         self._head_sharded_draft_regions = set[int]()
         self._ssm_region_indices = list[int]()
         # Per transfer group, the regions holding its layers (None: all). Tracked
-        # explicitly because aliased layers share a region keyed by address, so
-        # e.g. a scratch page lands in the region of the page it overlays.
+        # explicitly because aliased layers may share a compatible covering
+        # region, so e.g. a scratch page can land in the region it overlays.
         self._group_region_indices = list[list[int] | None]()
         self._ple_region_index: int | None = None
         # Page length of the PLE short-conv state; its region may be shared with
@@ -1804,7 +1813,7 @@ class NixlBaseConnectorWorker:
         registration_ranges: dict[tuple[int, str], tuple[int, int, int]] = {}
         region_mem_types: list[str] = []
         seen_base_addresses: list[int] = []
-        seen_region_keys: list[tuple[int, int]] = []
+        region_is_packed_row: list[bool] = []
         self._ssm_region_indices = []
         region_groups: list[set[int]] = []
         self._ple_block_len = None
@@ -1826,6 +1835,40 @@ class NixlBaseConnectorWorker:
 
         region_layers: list[list[str]] = []
         packed_member_layouts: dict[str, tuple[int, int]] = {}
+
+        def find_compatible_region(
+            base_addr: int,
+            block_len: int,
+            block_stride: int,
+            num_blocks: int,
+            is_mla_region: bool,
+        ) -> int | None:
+            for region_index, existing_base_addr in enumerate(seen_base_addresses):
+                if existing_base_addr != base_addr:
+                    continue
+                existing_block_len = self.block_len_per_layer[region_index]
+                existing_is_packed_row = region_is_packed_row[region_index]
+                if (
+                    existing_block_len == block_len
+                    and self.block_stride_per_layer[region_index] == block_stride
+                    and self.region_num_blocks[region_index] == num_blocks
+                ):
+                    # Preserve the original exact-length alias behavior. MLA
+                    # aliases may still update the canonical kernel geometry.
+                    return region_index
+                # Only a packed whole-row region may cover a shorter alias.
+                # Other shorter scratch pages keep their own region, while a
+                # wider view always gets a new region to avoid truncation.
+                if is_mla_region or not existing_is_packed_row:
+                    continue
+                if self.block_stride_per_layer[region_index] != block_stride:
+                    continue
+                if self.region_num_blocks[region_index] != num_blocks:
+                    continue
+                if existing_block_len < block_len:
+                    continue
+                return region_index
+            return None
 
         # K and V are packed into the content dim, so each attention layer is a
         # single NIXL region whose block transfers as one unit. Mamba layers instead
@@ -1865,11 +1908,14 @@ class NixlBaseConnectorWorker:
                 // self._physical_blocks_per_logical_kv_block
             )
             group = self.kv_cache_config.transfer_groups[group_index]
-            if group.host_resident:
-                logical_num_blocks = self.kv_cache_config.hisparse_host_num_blocks
-                assert logical_num_blocks is not None
-            else:
-                logical_num_blocks = self.kv_cache_config.num_blocks
+            layer_group_id = next(
+                i
+                for i, g in enumerate(self.kv_cache_config.kv_cache_groups)
+                if layer_name in g.kv_cache_specs
+            )
+            logical_num_blocks = self.kv_cache_config.num_blocks_for_group(
+                layer_group_id
+            )
             group_id = group_index
             num_blocks = (
                 logical_num_blocks
@@ -1905,6 +1951,7 @@ class NixlBaseConnectorWorker:
                 )
 
             if isinstance(layer_spec, MambaSpec):
+                packed_row = False
                 physical_ratio = self._physical_blocks_per_logical_kv_block
                 block_len = physical_page_size // physical_ratio
                 block_stride = physical_page_size
@@ -1917,6 +1964,7 @@ class NixlBaseConnectorWorker:
                     (cache.data_ptr(), block_len, block_stride // physical_ratio)
                 ]
             else:
+                packed_row = False
                 if cache.ndim == 1:
                     # Flat byte view: HMA tensors shared between layer types carry
                     # no block dimension, so stride(0) is 1 byte. Blocks abut, so
@@ -1956,6 +2004,7 @@ class NixlBaseConnectorWorker:
                     # advertise where this layer's page sits so a remote with
                     # LB* can still address it (HiSparse).
                     storage_block_len = block_stride
+                    packed_row = True
                     region_specs = [
                         (registration_base, storage_block_len, storage_block_len)
                     ]
@@ -2019,26 +2068,34 @@ class NixlBaseConnectorWorker:
                     ]
 
             for base_addr, block_len, block_stride in region_specs:
-                # Overlaid groups can page the same bytes with different page
-                # sizes (DSv4.1 SWA, indexer and compressor caches), so views at
-                # one address share a region only if their block_len matches.
-                # A packed PP producer keeps one region per layer.
-                region_key = (base_addr, block_len)
-                if region_key in seen_region_keys and not split_packed_rows:
-                    region_index = seen_region_keys.index(region_key)
+                # Equal-length aliases preserve the existing region identity. A
+                # shorter non-MLA view can use a packed whole-row region when
+                # its stride and block count match; a wider view always gets a
+                # new region.
+                if not split_packed_rows:
+                    region_index = find_compatible_region(
+                        base_addr,
+                        block_len,
+                        block_stride,
+                        num_blocks,
+                        is_mla_region,
+                    )
+                else:
+                    region_index = None
+                if region_index is not None:
                     assert region_mem_types[region_index] == mem_type
                     self._region_is_mla[region_index] |= is_mla_region
                     if is_mla_region:
                         self.block_len_per_layer[region_index] = block_len
                         self.block_stride_per_layer[region_index] = block_stride
                         self.region_num_blocks[region_index] = num_blocks
+                    region_is_packed_row[region_index] |= packed_row
                     if self.region_group_ids[region_index] != group_id:
                         self.region_group_ids[region_index] = _SHARED_REGION_GROUP_ID
                     region_groups[region_index].add(group_id)
                 else:
                     region_index = len(seen_base_addresses)
                     seen_base_addresses.append(base_addr)
-                    seen_region_keys.append(region_key)
                     self.block_len_per_layer.append(block_len)
                     self.block_stride_per_layer.append(block_stride)
                     self.region_group_ids.append(group_id)
@@ -2047,6 +2104,7 @@ class NixlBaseConnectorWorker:
                     self.region_num_blocks.append(num_blocks)
                     self._region_is_mla.append(is_mla_region)
                     region_mem_types.append(mem_type)
+                    region_is_packed_row.append(packed_row)
 
                 if region_index == len(region_layers):
                     region_layers.append([layer_name])
@@ -2092,6 +2150,7 @@ class NixlBaseConnectorWorker:
             == len(self.region_group_ids)
             == len(self.region_names)
             == len(self.region_num_blocks)
+            == len(region_is_packed_row)
         )
         # Descriptor ids must be region-ordered, matching the remote side.
         self._group_region_indices = [
@@ -2104,7 +2163,7 @@ class NixlBaseConnectorWorker:
         self.num_regions = len(seen_base_addresses)
         self.region_mem_types = region_mem_types
         self._mixed_mem_types = len(set(region_mem_types)) > 1
-        if self._has_mamba:
+        if self._has_mamba and self.kv_cache_config.pool_block_strides is None:
             self.region_num_blocks = [self.num_blocks] * self.num_regions
 
         self._set_region_layers(region_layers)
@@ -2288,6 +2347,7 @@ class NixlBaseConnectorWorker:
         region_indices = self._ssm_region_indices or range(len(base_addresses))
         for i in region_indices:
             base_addr = base_addresses[i]
+            num_blocks = self.region_num_blocks[i]
             block_stride = self.block_stride_per_layer[i] * physical_per_logical
             for off, sz in conv_offsets:
                 strided_descs.append(
@@ -2299,6 +2359,7 @@ class NixlBaseConnectorWorker:
             )
 
         if (region_index := self._ple_region_index) is not None:
+            num_blocks = self.region_num_blocks[region_index]
             block_len = self._ple_page_len() * physical_per_logical
             block_stride = (
                 self.block_stride_per_layer[region_index] * physical_per_logical
@@ -2348,6 +2409,11 @@ class NixlBaseConnectorWorker:
         ple_region = pairs.remote_ple_region
         for i in pairs.remote_ssm_regions:
             base_addr = nixl_agent_meta.kv_caches_base_addr[i]
+            num_blocks = (
+                nixl_agent_meta.region_num_blocks[i]
+                if nixl_agent_meta.region_num_blocks
+                else nixl_agent_meta.num_blocks // remote_physical_per_logical
+            )
             block_stride = (
                 nixl_agent_meta.block_strides[i] * remote_physical_per_logical
             )
@@ -2363,6 +2429,11 @@ class NixlBaseConnectorWorker:
 
         if self._ple_region_index is not None:
             assert ple_region is not None, "Remote holds no PLE region"
+            num_blocks = (
+                nixl_agent_meta.region_num_blocks[ple_region]
+                if nixl_agent_meta.region_num_blocks
+                else nixl_agent_meta.num_blocks // remote_physical_per_logical
+            )
             local_block_len = (
                 self._ple_page_len() * self._physical_blocks_per_logical_kv_block
             )

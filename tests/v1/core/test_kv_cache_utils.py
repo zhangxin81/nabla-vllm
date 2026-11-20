@@ -22,6 +22,7 @@ from tests.v1.core.utils import (
     new_kv_cache_spec,
     new_mamba_layer,
     new_mla_spec,
+    scheduler_test_model,
     sliding_window_layer,
 )
 from vllm.config import (
@@ -220,7 +221,9 @@ def test_hisparse_derived_specs_do_not_affect_kv_cache_layout(monkeypatch):
             )
         ),
     }
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.attention_config.hisparse_config = HiSparseConfig()
     config.model_config.hf_config.index_topk = 128
     reported = specs | {
@@ -271,7 +274,9 @@ def test_hisparse_packs_hot_layers_up_to_largest_device_page(
     specs["model.layers.2.self_attn"] = AttentionSpec(
         block_size=64, num_kv_heads=1, head_size=4096, dtype=torch.bfloat16
     )
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.attention_config.hisparse_config = HiSparseConfig()
     config.model_config.hf_text_config.index_topk = 128
 
@@ -314,7 +319,9 @@ def test_hisparse_indexer_pages_divide_pool_block(kv_cache_layout, indexer_block
             block_size=64, num_kv_heads=1, head_size=4096, dtype=torch.bfloat16
         ),
     }
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.attention_config.hisparse_config = HiSparseConfig()
     config.cache_config.kv_cache_layout = kv_cache_layout
     config.model_config.hf_text_config.index_topk = 128
@@ -1319,7 +1326,7 @@ def test_num_hash_lookahead_tokens(overrides: dict[str, Any], expected: int):
         speculative_config.method = method
         if num_lookahead > 1 or method == "dspark":
             speculative_config.draft_model_config = ModelConfig(
-                model="facebook/opt-125m",
+                model=scheduler_test_model().name,
                 hf_overrides={"n_predict": num_lookahead},
             )
             speculative_config.draft_parallel_config = ParallelConfig()
@@ -1472,7 +1479,9 @@ def test_dcp_target_allocates_replicated_draft_independently(
 ):
     """A draft must retain all positions even when the target shards them."""
     monkeypatch.delenv("VLLM_KV_CACHE_LAYOUT", raising=False)
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.parallel_config.decode_context_parallel_size = 4
     config.parallel_config.prefill_context_parallel_size = pcp_size
     config.scheduler_config.disable_hybrid_kv_cache_manager = disable_hybrid
@@ -1533,7 +1542,9 @@ def test_dcp_hybrid_target_pads_replicated_draft_pages(monkeypatch):
     """A hybrid target keeps a layer-compact layout next to a replicated draft:
     the draft's pages are padded to the target's instead of packing blocks."""
     monkeypatch.delenv("VLLM_KV_CACHE_LAYOUT", raising=False)
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.parallel_config.decode_context_parallel_size = 4
     config.cache_config.block_size = 16
     config.cache_config.kv_cache_layout = None
@@ -1565,7 +1576,9 @@ def test_dcp_hybrid_target_pads_replicated_draft_pages(monkeypatch):
 def test_dcp_replicated_kpool_tail_keeps_block_interior_layout(monkeypatch):
     """A replicated kpool tail ring is per-request state, not a draft group."""
     monkeypatch.delenv("VLLM_KV_CACHE_LAYOUT", raising=False)
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.parallel_config.decode_context_parallel_size = 4
     config.cache_config.kv_cache_layout = None
     tail = CircularBufferManager.layer_config(
@@ -1593,7 +1606,9 @@ def test_pipeline_stages_resolve_a_layout_every_stage_supports(monkeypatch):
     )
 
     monkeypatch.delenv("VLLM_KV_CACHE_LAYOUT", raising=False)
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.cache_config.kv_cache_layout = None
     any_layout = [layout.name for layout in get_supported_kv_cache_layouts([])]
     layout = resolve_kv_cache_layout(config, [["LBHNC", "BLHNC"], any_layout])
@@ -1611,7 +1626,9 @@ def test_pipeline_stages_resolve_a_layout_every_stage_supports(monkeypatch):
 
 @pytest.mark.parametrize("use_mla", [False, True])
 def test_full_attention_merge_preserves_replicated_cache_geometry(use_mla):
-    config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     config.parallel_config.decode_context_parallel_size = 4
     draft = replace(
         new_mla_spec() if use_mla else new_kv_cache_spec(),
@@ -1643,7 +1660,9 @@ def test_group_block_table_width_matches_layer(layer_type, dcp_size, expected_wi
     # The runner sizes the block table from the group spec while the metadata
     # builders are constructed from the per-layer spec, so the aggregate must
     # report the same width as the layers it wraps.
-    vllm_config = VllmConfig(model_config=ModelConfig(max_model_len=1024))
+    vllm_config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=1024)
+    )
     vllm_config.parallel_config.decode_context_parallel_size = dcp_size
     layer = full_layer(new_mla_spec()) if layer_type == "mla" else new_mamba_layer()
     single = new_kv_cache_group(["layer1"], layer)
@@ -1655,7 +1674,7 @@ def test_group_block_table_width_matches_layer(layer_type, dcp_size, expected_wi
 
 def test_get_max_concurrency_for_kv_cache_config():
     # Create a VllmConfig
-    model_id = "Qwen/Qwen1.5-7B"
+    model_id = scheduler_test_model().name
     max_model_len = 16384
     model_config = ModelConfig(
         model_id,
@@ -1884,7 +1903,9 @@ def test_generate_scheduler_kv_cache_config_keeps_zeroing(
     first_dtype, second_dtype, needs_zeroing
 ):
     """Scheduler projection and PP workers must agree on the zeroing contract."""
-    config = VllmConfig(model_config=ModelConfig(max_model_len=128))
+    config = VllmConfig(
+        model_config=ModelConfig(model=scheduler_test_model().name, max_model_len=128)
+    )
     config.cache_config.kv_cache_layout = "LBNHC"
     configs = get_kv_cache_configs(
         config,
@@ -2130,7 +2151,7 @@ def test_hma_not_disabled_when_kv_events_enabled():
     to False (i.e. HMA remains enabled) when no other condition requires it
     to be disabled.
     """
-    model_config = ModelConfig(max_model_len=16)
+    model_config = ModelConfig(model=scheduler_test_model().name, max_model_len=16)
     kv_events_config = KVEventsConfig(
         enable_kv_cache_events=True,
         publisher="null",

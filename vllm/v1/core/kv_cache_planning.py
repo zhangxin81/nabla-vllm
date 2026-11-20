@@ -675,6 +675,17 @@ def get_kv_cache_config_from_groups(
     num_blocks = may_override_num_blocks(vllm_config, num_blocks)
     size = bytes_per_block * num_blocks
 
+    independent = _use_independent_cache_pools(vllm_config)
+    if independent and not layout.is_block_outermost:
+        raise ValueError("Independent cache pools require a block-outermost layout")
+    pool_strides = (
+        tuple(
+            _get_kv_cache_bytes_per_block([group], layout) for group in kv_cache_groups
+        )
+        if independent
+        else None
+    )
+
     # Groups alias from byte 0. Spec regions are laid out differently:
     #
     # block-outer (the same packing repeats for every block):
@@ -687,17 +698,22 @@ def get_kv_cache_config_from_groups(
     # group 1: | C [ blk 0 | blk 1 | ... ] | D [ blk 0 | blk 1 | ... ] |
 
     kv_cache_tensors = []
-    for group in kv_cache_groups:
+    for group_id, group in enumerate(kv_cache_groups):
         byte_offset = 0
+        group_num_blocks = num_blocks
+        group_block_stride = interleaved_block_stride
+        if pool_strides is not None:
+            group_block_stride = pool_strides[group_id]
+            group_num_blocks = size // group_block_stride
         for spec, layer_names in _group_layers_by_spec(group).items():
-            block_stride = interleaved_block_stride
+            block_stride = group_block_stride
             padded_page = _get_layer_block_stride(spec)
             if block_stride is None and padded_page != spec.page_size_bytes:
                 assert layout.is_block_compact, f"{layout.name} cannot pad pages"
                 block_stride = padded_page
             layer_stride, block_stride, _, _, _ = compute_layout_strides(
                 spec,
-                num_blocks,
+                group_num_blocks,
                 len(layer_names),
                 layout,
                 fixed_strides=(None, block_stride, None, None, None),
@@ -723,6 +739,18 @@ def get_kv_cache_config_from_groups(
         prefix_cache_retention_interval=(
             vllm_config.cache_config.prefix_cache_retention_interval
         ),
+        pool_block_strides=pool_strides,
+        arena_size_bytes=size if independent else 0,
+    )
+
+
+def _use_independent_cache_pools(vllm_config: VllmConfig) -> bool:
+    model = vllm_config.model_config
+    return bool(
+        model is not None
+        and getattr(model.hf_config, "model_type", None)
+        in {"qwen4_exp", "deepseek_v41"}
+        and vllm_config.attention_config.hisparse_config is None
     )
 
 
@@ -987,6 +1015,14 @@ def _get_packed_kv_cache_groups(
         ),
         default=0,
     )
+    # `_get_kv_cache_bytes_per_block` rounds the block up to the layers' stride
+    # alignment; let state groups fill that padding instead of adding groups.
+    anchor_bytes = round_up(
+        anchor_bytes,
+        math.lcm(
+            *(s.spec.get_block_stride_alignment() for s in layer_configs.values())
+        ),
+    )
 
     groups = []
     for spec, page_size_layers, balanced in bucketed:
@@ -1219,6 +1255,14 @@ def _max_memory_usage_bytes_from_groups(
     kv_cache_groups = [group for group in kv_cache_groups if not group.host_resident]
     if not kv_cache_groups:
         return 0
+
+    if _use_independent_cache_pools(vllm_config):
+        layout = vllm_config.cache_config.get_resolved_kv_cache_layout()
+        return sum(
+            group.max_allocated_blocks_per_request(vllm_config)
+            * _get_kv_cache_bytes_per_block([group], layout)
+            for group in kv_cache_groups
+        )
 
     bytes_per_block = _pool_bytes_per_block_from_builder(
         builder, vllm_config, kv_cache_groups

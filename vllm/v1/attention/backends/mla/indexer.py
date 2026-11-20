@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-from dataclasses import dataclass
+import math
+from collections import Counter
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -32,7 +34,7 @@ from vllm.utils.deep_gemm import (
     has_deep_gemm,
     native_next_n_supported,
 )
-from vllm.utils.math_utils import round_down
+from vllm.utils.math_utils import cdiv, round_down
 from vllm.utils.platform_utils import num_compute_units
 from vllm.utils.torch_utils import PIN_MEMORY, async_tensor_h2d
 from vllm.v1.attention.backend import (
@@ -315,6 +317,10 @@ class DeepseekV41IndexerBackend(DeepseekV4IndexerBackend):
     @staticmethod
     def get_name() -> str:
         return "DEEPSEEK_V41_INDEXER"
+
+    @staticmethod
+    def get_builder_cls() -> type["DeepseekV32IndexerMetadataBuilder"]:
+        return DeepseekV41IndexerMetadataBuilder
 
     @staticmethod
     def get_supported_kernel_block_sizes(kv_cache_spec=None) -> list[int | MultipleOf]:
@@ -989,6 +995,13 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             return AttentionCGSupport.ALWAYS
         return AttentionCGSupport.UNIFORM_BATCH
 
+    @classmethod
+    def get_prefill_buffer_size(
+        cls, vllm_config: VllmConfig, compress_ratio: int
+    ) -> int:
+        """Gather rows reserved for each prefill chunk, after compression."""
+        return get_max_prefill_buffer_size(vllm_config) // compress_ratio
+
     def __init__(self, *args, block_table_width: int, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         scheduler_config = self.vllm_config.scheduler_config
@@ -1021,8 +1034,8 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         # NOTE(Chen):an estimated max size of flattened_kv. Need to double check.
         # Counted in compressed rows, like the chunker's seq_lens and the
         # workspace.
-        self.max_prefill_buffer_size = (
-            get_max_prefill_buffer_size(self.vllm_config) // self.compress_ratio
+        self.max_prefill_buffer_size = self.get_prefill_buffer_size(
+            self.vllm_config, self.compress_ratio
         )
         self.num_speculative_tokens = (
             self.vllm_config.speculative_config.num_speculative_tokens
@@ -1034,6 +1047,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             and self.vllm_config.speculative_config.enable_adaptive_verification
         )
         self.indexer_uses_fp4 = dsa_indexer_uses_fp4(self.vllm_config)
+        self.compressed_prefill_logits = current_platform.is_cuda()
         # Plan prefill chunks for the fused MQA+top-k kernel (not bounded by
         # the logits budget). PCP + DCP has its own planner. v4.1 candidate
         # selection is not excluded: its pre-candidate indexers take
@@ -1395,6 +1409,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             torch.from_numpy(query_lens.astype(np.int32)),
             self.max_prefill_buffer_size,
             max_logits_bytes,
+            compressed_logits=self.compressed_prefill_logits,
         )
         return [
             (
@@ -1420,11 +1435,13 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         max_logits_bytes: int,
         request_offset: int = 0,
         fused_mqa_topk_eligible: bool = False,
+        compressed_logits: bool = False,
     ) -> list[tuple[slice, slice]]:
         """Split this step's prefill requests into chunks, respecting:
         - N constraint: total_seq_lens <= workspace_size (existing O(N)
           workspace)
-        - Logits constraint: M * N * 4 <= max_logits_bytes
+        - Logits constraint: M * W * 4 <= max_logits_bytes, where W is the
+          longest request for compressed logits and total keys otherwise.
 
         When a single request-level chunk still exceeds the logits budget,
         sub-chunks on the query dimension (M) to bound peak memory.
@@ -1444,7 +1461,7 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
         end = 0
 
         while end < n:
-            start, chunk_m, chunk_n = end, 0, 0
+            start, chunk_m, chunk_n, chunk_w = end, 0, 0, 0
 
             while end < n:
                 q, s = (
@@ -1452,16 +1469,17 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     compressed_seq_lens_cpu[end].item(),
                 )
                 new_m, new_n = chunk_m + q, chunk_n + s
+                new_w = max(chunk_w, s) if compressed_logits else new_n
                 if fused_mqa_topk_eligible and new_n <= FUSED_MQA_TOPK_MAX_KEYS:
                     fits = new_m <= FUSED_MQA_TOPK_MAX_ROWS
                 else:
                     # fused_mqa_topk planning never packs past the key limit.
                     fits = (
                         not fused_mqa_topk_eligible
-                        and new_m * new_n <= max_logits_elems
+                        and new_m * new_w <= max_logits_elems
                     )
                 if new_n <= workspace_size and fits:
-                    chunk_m, chunk_n = new_m, new_n
+                    chunk_m, chunk_n, chunk_w = new_m, new_n, new_w
                     end += 1
                 else:
                     break
@@ -1473,12 +1491,13 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     prefill_query_lens_cpu[end].item(),
                     compressed_seq_lens_cpu[end].item(),
                 )
+                chunk_w = chunk_n
                 end += 1
 
             req_slice = slice(start + request_offset, end + request_offset)
             max_q = (
-                dense_logits_rows(chunk_n, max_logits_bytes)
-                if chunk_n > 0
+                dense_logits_rows(chunk_w, max_logits_bytes)
+                if chunk_w > 0
                 else max(1, chunk_m)
             )
             if fused_mqa_topk_eligible and chunk_n <= FUSED_MQA_TOPK_MAX_KEYS:
@@ -1658,9 +1677,15 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                     max_logits_bytes,
                     request_offset=num_decodes,
                     fused_mqa_topk_eligible=self.fused_mqa_topk_eligible,
+                    compressed_logits=self.compressed_prefill_logits,
                 )
 
             chunks = []
+            # Query sub-chunks of one request range share its KV-side metadata:
+            # build it once over all of the range's rows, then slice the rows.
+            num_subchunks = Counter((r.start, r.stop) for r, _ in chunk_specs)
+            whole: dict[tuple[int, int], DeepseekV32IndexerPrefillChunkMetadata | None]
+            whole = {}
             for req_slice, query_slice in chunk_specs:
                 pcp_plan = None
                 if req_idx is not None:
@@ -1672,24 +1697,32 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
                         self.device,
                         self.cp_kv_cache_interleave_size,
                     )
-                metadata = build_prefill_chunk_metadata(
-                    req_slice.start,
-                    req_slice.stop,
-                    query_start_loc,
-                    query_start_loc_cpu,
-                    seq_lens,
-                    compressed_seq_lens,
-                    compressed_seq_lens_cpu,
-                    block_table,
-                    self.compress_ratio,
-                    query_slice=query_slice,
-                    skip_kv_gather=query_slice.start > 0,
-                    dcp_rank=self.dcp_rank,
-                    dcp_world_size=self.dcp_world_size,
-                    cp_kv_cache_interleave_size=self.compressed_cp_interleave_size,
-                    pcp_plan=pcp_plan,
-                    positions=positions,
-                )
+                key = (req_slice.start, req_slice.stop)
+                shared = pcp_plan is None and num_subchunks[key] > 1
+                if shared and key in whole:
+                    metadata = slice_prefill_chunk_query(whole[key], query_slice)
+                else:
+                    metadata = build_prefill_chunk_metadata(
+                        req_slice.start,
+                        req_slice.stop,
+                        query_start_loc,
+                        query_start_loc_cpu,
+                        seq_lens,
+                        compressed_seq_lens,
+                        compressed_seq_lens_cpu,
+                        block_table,
+                        self.compress_ratio,
+                        query_slice=None if shared else query_slice,
+                        skip_kv_gather=not shared and query_slice.start > 0,
+                        dcp_rank=self.dcp_rank,
+                        dcp_world_size=self.dcp_world_size,
+                        cp_kv_cache_interleave_size=self.compressed_cp_interleave_size,
+                        pcp_plan=pcp_plan,
+                        positions=positions,
+                    )
+                    if shared:
+                        whole[key] = metadata
+                        metadata = slice_prefill_chunk_query(metadata, query_slice)
                 # Skip when total_seq_lens is 0 (i.e., no compressed token).
                 if metadata is not None:
                     chunks.append(metadata)
@@ -1961,6 +1994,20 @@ class DeepseekV32IndexerMetadataBuilder(AttentionMetadataBuilder):
             decode.schedule_metadata.copy_(schedule_metadata)
 
 
+class DeepseekV41IndexerMetadataBuilder(DeepseekV32IndexerMetadataBuilder):
+    @classmethod
+    def get_prefill_buffer_size(
+        cls, vllm_config: VllmConfig, compress_ratio: int
+    ) -> int:
+        """Reserve the key rows reachable under the chunker's workspace bound."""
+        max_len = cdiv(vllm_config.model_config.max_model_len, compress_ratio)
+        max_logits_elems = envs.VLLM_SPARSE_INDEXER_MAX_LOGITS_MB * 1024 * 1024 // 4
+        return min(
+            super().get_prefill_buffer_size(vllm_config, compress_ratio),
+            max(max_len, math.isqrt(max_logits_elems * max_len)),
+        )
+
+
 def build_prefill_chunk_metadata(
     start_idx: int,
     end_idx: int,
@@ -2097,6 +2144,26 @@ def build_prefill_chunk_metadata(
         local_cu_seq_lens=local_cu_seq_lens,
         local_total_seq_lens=local_total_seq_lens,
         max_local_total_seq_lens=max_local_total_seq_lens,
+    )
+
+
+def slice_prefill_chunk_query(
+    chunk: DeepseekV32IndexerPrefillChunkMetadata | None, query_slice: slice
+) -> DeepseekV32IndexerPrefillChunkMetadata | None:
+    """The query rows `query_slice` of a chunk built over all of its rows, as
+    `build_prefill_chunk_metadata(..., query_slice=query_slice)` builds them."""
+    if chunk is None:
+        return None
+    num_rows = chunk.token_end - chunk.token_start
+    start = min(query_slice.start, num_rows)
+    stop = min(query_slice.stop, num_rows)
+    return replace(
+        chunk,
+        cu_seqlen_ks=chunk.cu_seqlen_ks[start:stop],
+        cu_seqlen_ke=chunk.cu_seqlen_ke[start:stop],
+        token_start=chunk.token_start + start,
+        token_end=chunk.token_start + stop,
+        skip_kv_gather=chunk.skip_kv_gather or start > 0,
     )
 
 

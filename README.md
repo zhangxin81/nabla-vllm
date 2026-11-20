@@ -1,96 +1,111 @@
-<!-- markdownlint-disable MD001 MD041 -->
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-light.png" width=55%>
-  </picture>
-</p>
+# bytevllm
 
-<h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
-</h3>
+bytevllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
+**DeepSeek-V4.1-Flash** 构建专用推理运行时。硬件范围限定为 NVIDIA CUDA，
+保留 H20、H100、B200 等架构各自需要的执行路径。
 
-<p align="center">
-| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
-</p>
+我们保留目标模型所需的调度、并行、通信和内核能力，逐步删除无关后端和模型依赖。
+每次裁剪或重构都要能说明它改变了什么，并用同配置的服务基线验证正确性、吞吐和延迟。
 
-🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
-For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
+## 缓存的索引、分配与检查点分别管理
 
----
+目标设计是：**统一管理前缀索引和内存预算，KV 按 token page 分配，
+GDN 按 state slot 分配，checkpoint 的位置单独决定。**
 
-## About
+前缀索引回答哪些已提交的输入历史可以复用；物理池负责资源分配和回收；
+checkpoint 策略决定在哪些位置保留可续写的状态。
+三者通过明确的引用和生命周期约束协作。
 
-This branch starts a CUDA-only specialization for Qwen3.8-Flash-Next and
-DeepSeek-V4.1-Flash. See the [cache design and migration status](docs/design/specialized_hybrid_cache.md).
-The [downstream PR integration record](docs/design/bytevllm_pr_integration.md)
-lists imported revisions, adaptations, and validation limits.
+| 资源 | 分配单位 | 复用条件 |
+| --- | --- | --- |
+| Attention KV | Token page | 输入历史和有效注意力窗口一致 |
+| Qwen GDN／PLE | State slot | 精确的已提交检查点，含必要的回滚状态 |
+| QSA／indexer | 原生 page 和压缩单位 | 索引、KV 与输入覆盖范围一致 |
+| DeepSeek sparse／compressor | 原生 page 或 state | 压缩边界、共享缓存与续写边界一致 |
 
-vLLM is a fast and easy-to-use library for LLM inference and serving.
+公共预算按实际 backing bytes 计价，包含对齐、padding、活跃请求和传输中的引用。
+请求必须同时满足各资源池的准入条件，才能提交分配。
+异步传输完成前保留源检查点，CUDA Graph 回放期间保持缓冲区地址稳定。
 
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
+这一方向深度参考 SGLang 的独立 Mamba slot allocator、统一 state pool 和
+checkpoint 管理，但不引入 SGLang 运行时依赖。
+源码指针和迁移约束见 [缓存设计](docs/design/specialized_hybrid_cache.md)。
 
-vLLM is fast with:
+## 当前完成度
 
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests, chunked prefill, prefix caching
-- Fast and flexible model execution with piecewise and full CUDA graphs
-- Quantization: FP8, MXFP8/MXFP4, NVFP4, INT8, INT4, GPTQ/AWQ, GGUF, compressed-tensors, ModelOpt, TorchAO, and [more](https://docs.vllm.ai/en/latest/features/quantization/index.html)
-- Optimized attention kernels including FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, and Triton
-- Optimized GEMM/MoE kernels for various precisions using CUTLASS, TRTLLM-GEN, CuTeDSL
-- Speculative decoding including n-gram, suffix, EAGLE, DFlash
-- Automatic kernel generation and graph-level transformations using torch.compile
-- Disaggregated prefill, decode, and encode
+| 工作 | 状态 |
+| --- | --- |
+| CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现；保留 NVIDIA 架构选择 |
+| 公共前缀索引 | `PrefixCacheIndex` 已接入 coordinator 和物理 `BlockPool`，保留池内 ID 与 owner 引用 |
+| 独立 state slot 和统一字节预算 | 已接入准入、分配、runner、清零和复制；NIXL 首步续写正在验证 |
+| 模型与内核依赖裁剪 | 继续按两个目标模型的依赖闭包推进 |
+| 下游 PR 集成 | 已导入选定的 FlashMLA、DFlash、FP8、NIXL IPC 和 proxy 改动，见集成记录 |
 
-vLLM is flexible and easy to use with:
+Attention page 与 GDN state slot 已按各自的原生 stride 计价，
+通过稳定的 tensor view 共用 backing allocation。正式显存容量与吞吐结果仍待服务测试。
+导入的每个 PR 也需要在组合后的代码、目标模型和硬件上重新验证。
+具体来源和历史验证范围见 [PR 集成记录](docs/design/bytevllm_pr_integration.md)。
 
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor, pipeline, data, expert, and context parallelism for distributed inference
-- Streaming outputs
-- Generation of structured outputs using xgrammar or guidance
-- Tool calling and reasoning parsers
-- OpenAI-compatible API server, plus Anthropic Messages API and gRPC support
-- Efficient multi-LoRA support for dense and MoE layers
-- Support for NVIDIA CUDA GPUs, including H20, H100 and B200.
+## 性能基线与迭代
 
-vLLM seamlessly supports 200+ model architectures on Hugging Face, including:
+最新实验为 **8× H100 80GB，4P4D，两侧 TP=4／EP=4**。
+Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
+比较最新上游 vLLM、bytevllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 bytevllm。
 
-- Decoder-only LLMs (e.g., Llama, Qwen, Gemma)
-- Mixture-of-Expert LLMs (e.g., Mixtral, DeepSeek-V3, Qwen-MoE, GPT-OSS)
-- Hybrid attention and state-space models (e.g., Mamba, Qwen3.5)
-- Multi-modal models (e.g., LLaVA, Qwen-VL, Pixtral)
-- Embedding and retrieval models (e.g., E5-Mistral, GTE, ColBERT)
-- Reward and classification models (e.g., Qwen-Math)
+测试分别记录以下权重，避免混合不同 checkpoint 的结果：
 
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
+- Qwen3.8-Flash-Next-FP8（历史权重）。
+- DeepSeek-V4.1-Flash-3。
+- Qwen3.8-Flash-Next-FP8（补充权重）。
 
-## Getting Started
+[H100 基线记录](docs/benchmarks/bytevllm/h100-4p4d-20261120.md)
+包含输入输出矩阵、吞吐、TTFT、TPOT、实际请求长度和验证边界。
+每份基线固定源码 SHA、权重指纹、依赖、并行方式、内核选择和采样参数，
+并保留可比较的 CSV、图表和复现命令。
 
-Install vLLM with [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`:
+合成性能负载使用固定 dataset seed、`temperature=0` 和 `ignore_eos`。
+主矩阵关闭 prefix caching，共享前缀另测。
+吞吐饱和点需要与延迟一起阅读，低样本量的 p95／p99 不作为 SLA 估计。
+源代码版本不同、后端配置变化和未通过的检查都在记录中明确说明。
+
+## 开发与运行
+
+包名和 CLI 暂时仍为 `vllm`。使用 `uv` 管理环境和依赖：
 
 ```bash
-uv pip install vllm
-vllm download-kernels  # precompiled kernels for faster startup
+git clone https://github.com/zhangxin81/bytevllm.git
+cd bytevllm
+uv venv --python 3.12
+source .venv/bin/activate
+VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+uv pip install -r requirements/lint.txt
+pre-commit install
 ```
 
-Or [build from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source) for development.
+预编译安装用于准备环境。要使用本仓库的 CUDA 改动，按
+[增量编译流程](docs/contributing/incremental_build.md) 编译并安装相应原生扩展，
+确认 PyTorch、CUDA Toolkit 和 GPU 架构匹配。H100 基线的实际依赖和构建来源
+以实验记录为准。
 
-Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
+```bash
+.venv/bin/python tools/generate_cmake_presets.py
+cmake --preset release
+cmake --build --preset release --target install
+```
 
-- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)
-- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
-- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
+部署参数可参考 [Qwen recipe](https://recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next)
+和 [DeepSeek recipe](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)，
+然后在目标硬件上验证。H100 测试结果不代表 H20 或 B200 已通过相同验证。
 
-## Contributing
+## 上游与贡献
 
-We welcome and value any contributions and collaborations.
-Please check out [Contributing to vLLM](https://docs.vllm.ai/en/latest/contributing/index.html) for how to get involved.
+bytevllm 基于 [vLLM](https://github.com/vllm-project/vllm)，初始上游基线为
+`898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`。
+沿用其 [Apache-2.0 许可](LICENSE)，并保留上游归属和贡献记录。
+贡献时遵循 [AGENTS.md](AGENTS.md) 和现有领域指南；PR 应说明设计、重复工作检查、
+实际测试与 AI 辅助范围。
 
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
+研究中使用 vLLM／PagedAttention 时，请引用上游论文：
 
 ```bibtex
 @inproceedings{kwon2023efficient,
@@ -100,17 +115,3 @@ If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs
   year={2023}
 }
 ```
-
-## Contact Us
-
-<!-- --8<-- [start:contact-us] -->
-- For technical questions and feature requests, please use GitHub [Issues](https://github.com/vllm-project/vllm/issues)
-- For discussing with fellow users, please use the [vLLM Forum](https://discuss.vllm.ai)
-- For coordinating contributions and development, please use [Slack](https://slack.vllm.ai)
-- For security disclosures, please use GitHub's [Security Advisories](https://github.com/vllm-project/vllm/security/advisories) feature
-- For collaborations and partnerships, please contact us at [collaboration@vllm.ai](mailto:collaboration@vllm.ai)
-<!-- --8<-- [end:contact-us] -->
-
-## Media Kit
-
-- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit)

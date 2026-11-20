@@ -22,6 +22,182 @@ from vllm.utils.import_utils import has_deep_gemm
 from vllm.utils.math_utils import cdiv
 
 
+@pytest.mark.parametrize("next_n", [1, 2, 4])
+@pytest.mark.parametrize("candidate_mode", ["none", "write", "read"])
+def test_decode_logits_budget_preserves_topk_and_graph_replay(
+    monkeypatch, workspace_init, next_n, candidate_mode
+):
+    """Whole-request chunking lowers peak memory without changing selected KV."""
+    from vllm.config import (
+        CUDAGraphMode,
+        SchedulerConfig,
+        VllmConfig,
+        set_current_vllm_config,
+    )
+    from vllm.forward_context import set_forward_context
+    from vllm.model_executor.layers import sparse_attn_indexer as indexer
+    from vllm.v1.attention.backends.mla.indexer import (
+        DeepSeekV32IndexerDecodeMetadata,
+        DeepseekV32IndexerMetadata,
+    )
+
+    torch.manual_seed(17)
+    batch, heads, dim, block_size, max_len, topk = 9, 32, 128, 64, 65536, 512
+    rows = batch * next_n
+    q = torch.randn(batch, next_n, heads, dim, device="cuda").to(torch.float8_e4m3fn)
+    cache = kv_cache_cast_to_fp8(torch.randn(96, block_size, 1, dim, device="cuda"))
+    weights = torch.rand(rows, heads, device="cuda")
+    seq_lens = (
+        torch.tensor(
+            [500, 3000, 4096, 2049, 1024, 4000, 2500, 3200, 0],
+            dtype=torch.int32,
+            device="cuda",
+        )[:, None]
+        .expand(-1, next_n)
+        .contiguous()
+    )
+    original_lens = seq_lens.clone()
+    block_table = torch.arange(64, dtype=torch.int32, device="cuda").repeat(batch, 1)
+    schedule = get_paged_mqa_logits_metadata(seq_lens, block_size, get_num_sms())
+    decode = DeepSeekV32IndexerDecodeMetadata(
+        block_table=block_table,
+        seq_lens=seq_lens,
+        decode_lens=torch.full((batch,), next_n, dtype=torch.int32, device="cuda"),
+        requires_padding=False,
+        schedule_metadata=schedule,
+    )
+    metadata = DeepseekV32IndexerMetadata(
+        seq_lens=seq_lens,
+        max_seq_len=4096,
+        slot_mapping=torch.zeros(rows, dtype=torch.int64, device="cuda"),
+        num_decodes=batch,
+        num_decode_tokens=rows,
+        num_prefills=0,
+        num_prefill_tokens=0,
+        decode=decode,
+    )
+    config = VllmConfig(
+        scheduler_config=SchedulerConfig(
+            max_model_len=max_len,
+            is_encoder_decoder=False,
+            max_num_seqs=128,
+            max_num_batched_tokens=4096,
+        )
+    )
+    hidden = torch.empty(rows, 1, device="cuda")
+    expected = torch.empty(rows, topk, dtype=torch.int32, device="cuda")
+    actual = torch.empty_like(expected)
+    expected_candidates = actual_candidates = None
+    if candidate_mode != "none":
+        expected_candidates = torch.tensor(
+            [0, 2, 4, 6], dtype=torch.int32, device="cuda"
+        ).repeat(rows, 1)
+        actual_candidates = expected_candidates.clone()
+
+    def run(dst, candidates):
+        with set_forward_context(
+            {"test_indexer": metadata},
+            config,
+            num_tokens=rows,
+            cudagraph_runtime_mode=CUDAGraphMode.FULL,
+        ):
+            indexer.sparse_attn_indexer(
+                hidden,
+                "test_indexer",
+                cache.squeeze(-2),
+                q.reshape(rows, heads, dim),
+                None,
+                None,
+                weights,
+                dim,
+                "ue8m0",
+                topk,
+                dim,
+                max_len,
+                0,
+                dst,
+                True,
+                False,
+                False,
+                "",
+                candidate_blocks=candidates,
+                candidate_block_size=512,
+                candidate_write=candidate_mode == "write",
+            )
+
+    def valid_selection(dst):
+        valid = (dst >= 0) & (dst < seq_lens.reshape(-1, 1))
+        return torch.where(valid, dst, -1).sort(-1).values
+
+    def peak(dst, candidates):
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        run(dst, candidates)
+        torch.cuda.synchronize()
+        return torch.cuda.max_memory_allocated() - before
+
+    monkeypatch.setenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "512")
+    run(expected, expected_candidates)
+    full_peak = peak(expected, expected_candidates)
+    monkeypatch.setenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "1")
+    run(actual, actual_candidates)
+    chunk_peak = peak(actual, actual_candidates)
+    torch.testing.assert_close(valid_selection(actual), valid_selection(expected))
+    if candidate_mode == "write":
+        torch.testing.assert_close(actual_candidates, expected_candidates)
+    assert chunk_peak < full_peak
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run(actual, actual_candidates)
+    for length in (2048, 4096):
+        seq_lens.copy_(original_lens.clamp_max(length))
+        weights.copy_(torch.rand_like(weights))
+        schedule.copy_(
+            get_paged_mqa_logits_metadata(seq_lens, block_size, get_num_sms())
+        )
+        monkeypatch.setenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "512")
+        run(expected, expected_candidates)
+        graph.replay()
+        torch.testing.assert_close(valid_selection(actual), valid_selection(expected))
+        if candidate_mode == "write":
+            torch.testing.assert_close(actual_candidates, expected_candidates)
+
+    # Profiling must reserve the same bounded decode scratch as execution.
+    monkeypatch.setenv("VLLM_SPARSE_INDEXER_MAX_LOGITS_MB", "1")
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    with (
+        set_current_vllm_config(config),
+        set_forward_context(None, config, num_tokens=rows),
+    ):
+        indexer.sparse_attn_indexer(
+            hidden,
+            "test_indexer",
+            cache.squeeze(-2),
+            q.reshape(rows, heads, dim),
+            None,
+            None,
+            weights,
+            dim,
+            "ue8m0",
+            topk,
+            dim,
+            max_len,
+            0,
+            actual,
+            True,
+            False,
+            False,
+            "",
+        )
+    torch.cuda.synchronize()
+    profile_peak = torch.cuda.max_memory_allocated() - before
+    assert profile_peak <= 1024 * 1024
+
+
 def encode_indexer_scales(sf: torch.Tensor) -> torch.Tensor:
     """Per-token power-of-two fp32 scales as the indexer K cache stores them:
     four equal packed UE8M0 bytes under MX scales, else the fp32 itself."""

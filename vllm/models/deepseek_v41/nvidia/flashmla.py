@@ -14,6 +14,7 @@ from vllm.models.deepseek_v41.common.ops import (
     compute_global_topk_indices_and_lens,
     dequantize_and_gather_k_cache,
 )
+from vllm.models.deepseek_v41.common.ops.cache_utils import PhysicalSelectionCache
 from vllm.models.deepseek_v41.nvidia.ops.o_proj import (
     dsv41_o_proj,
     register_dsv41_o_proj_warmup,
@@ -24,7 +25,7 @@ from vllm.models.deepseek_v41.sparse_mla import (
     DeepseekV41SparseSWAMetadataBuilder,
 )
 from vllm.platforms import current_platform
-from vllm.utils.math_utils import round_up
+from vllm.utils.math_utils import cdiv, round_up
 from vllm.v1.attention.backend import AttentionCGSupport, max_decode_query_len
 from vllm.v1.attention.backends.mla.sparse_swa import DeepseekSparseSWABackend
 from vllm.v1.attention.ops.flashmla import (
@@ -69,6 +70,9 @@ class DeepseekV4FlashMLAAttention(DeepseekV4Attention):
 
     backend_cls = DeepseekV4FlashMLABackend
     swa_backend_cls = DeepseekSparseSWAFlashMLABackend
+    # Prefill chunk gather budget: 2^20 bf16 rows (1 GiB at head_dim 512), or one
+    # full-length request if that is wider.
+    PREFILL_GATHER_ROWS: ClassVar[int] = 1 << 20
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -76,7 +80,25 @@ class DeepseekV4FlashMLAAttention(DeepseekV4Attention):
             self._o_proj_block_size
         )
         register_dsv41_o_proj_warmup(self)
+        self.physical_selection_cache: PhysicalSelectionCache | None = None
         self._prefill_num_heads = self._get_prefill_num_heads()
+        # Widest request a prefill chunk gathers: compressed context, window
+        # and new tokens.
+        compressed = (
+            0
+            if self.compress_ratio == 0
+            else cdiv(self.max_model_len, self.compress_ratio)
+        )
+        self.prefill_gather_width = (
+            compressed + self.window_size + self.max_num_batched_tokens
+        )
+        self.prefill_chunk_size = max(
+            1,
+            min(
+                self.PREFILL_CHUNK_SIZE,
+                self.PREFILL_GATHER_ROWS // self.prefill_gather_width,
+            ),
+        )
 
     def _get_prefill_num_heads(self) -> int:
         return (
@@ -121,22 +143,17 @@ class DeepseekV4FlashMLAAttention(DeepseekV4Attention):
             # Warmup dummy run: no real metadata. Reserve the same bf16
             # gather workspace _forward_prefill would; the dequantize / topk
             # / sparse_fwd kernels are skipped this step.
-            swa_only = self.compress_ratio == 0
-            N = (
-                0
-                if swa_only
-                else (self.max_model_len + self.compress_ratio - 1)
-                // self.compress_ratio
-            )
-            M = N + self.window_size + self.max_num_batched_tokens
-            if swa_only:
+            if self.compress_ratio == 0:
                 top_k = 0
             else:
                 assert self.topk_indices_buffer is not None
                 top_k = self.topk_indices_buffer.shape[-1]
             combined_topk = round_up(top_k + self.window_size, 128)
             current_workspace_manager().get_simultaneous(
-                ((self.PREFILL_CHUNK_SIZE, M, q.shape[-1]), torch.bfloat16),
+                (
+                    (self.prefill_chunk_size, self.prefill_gather_width, q.shape[-1]),
+                    torch.bfloat16,
+                ),
                 ((self.max_num_batched_tokens, combined_topk), torch.int32),
                 ((self.max_num_batched_tokens,), torch.int32),
             )
@@ -218,13 +235,39 @@ class DeepseekV4FlashMLAAttention(DeepseekV4Attention):
             assert self.topk_indices_buffer is not None
             block_size = attn_metadata.block_size // self.compress_ratio
             is_valid = swa_metadata.is_valid_token[:num_decode_tokens]
-            global_indices, topk_lens = compute_global_topk_indices_and_lens(
-                self.topk_indices_buffer[:num_decode_tokens],
-                swa_metadata.token_to_req_indices,
-                attn_metadata.block_table[:num_decodes],
-                block_size,
-                is_valid,
+            cache = self.physical_selection_cache
+            context = get_forward_context()
+            can_reuse = (
+                cache is not None
+                and swa_metadata.num_prefills == 0
+                and swa_metadata.max_decode_query_len == 1
+                and num_decode_tokens == num_decodes
+                and num_decode_tokens <= cache.indices.shape[0]
+                and self.index_source_layer_id is not None
             )
+            if can_reuse:
+                assert cache is not None and self.index_source_layer_id is not None
+                global_indices, topk_lens = cache.get(
+                    self.topk_indices_buffer[:num_decode_tokens],
+                    swa_metadata.token_to_req_indices,
+                    attn_metadata.block_table[:num_decodes],
+                    block_size,
+                    is_valid,
+                    context=context,
+                    source_layer=self.index_source_layer_id,
+                    kv_metadata=attn_metadata,
+                    swa_metadata=swa_metadata,
+                )
+            else:
+                if cache is not None:
+                    cache.invalidate()
+                global_indices, topk_lens = compute_global_topk_indices_and_lens(
+                    self.topk_indices_buffer[:num_decode_tokens],
+                    swa_metadata.token_to_req_indices,
+                    attn_metadata.block_table[:num_decodes],
+                    block_size,
+                    is_valid,
+                )
             topk_indices = global_indices.view(num_decode_tokens, 1, -1)
 
         swa_indices = swa_metadata.decode_swa_indices
@@ -315,7 +358,7 @@ class DeepseekV4FlashMLAAttention(DeepseekV4Attention):
         top_k = 0 if swa_only else topk_indices.shape[-1]
         chunk_plan = swa_metadata.get_prefill_chunk_plan(
             compress_ratio=self.compress_ratio,
-            prefill_chunk_size=self.PREFILL_CHUNK_SIZE,
+            prefill_chunk_size=self.prefill_chunk_size,
             # v4.1: every cr>0 layer (including cr==1) gathers a full-length
             # compressed region; only cr==0 layers are SWA-only.
             has_compressed=not swa_only,

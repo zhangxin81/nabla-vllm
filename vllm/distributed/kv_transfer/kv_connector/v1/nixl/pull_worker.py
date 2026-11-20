@@ -98,6 +98,7 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
             # Remote block IDs are kept logical here; expanded in
             # _read_blocks_for_req using the remote engine's phys ratio.
             remote_engine_id = meta.remote.engine_id
+            self._prepare_remote_registration(meta)
             if (
                 meta.local_fastpath is True
                 and remote_engine_id not in self._remote_agents
@@ -213,6 +214,16 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
                 lapsed.add(req_id)
         return lapsed
 
+    def _prepare_remote_registration(self, meta: ReqMeta) -> None:
+        assert meta.remote is not None
+        engine_id = meta.remote.engine_id
+        generation = meta.remote.registration_generation
+        if self._remote_registration_generations.get(engine_id, 0) < generation:
+            # Invalidate before a synchronous handshake installs fresh handles.
+            if engine_id in self._remote_agents:
+                self._cleanup_remote_engine(engine_id, log_eviction=False)
+            self._remote_registration_generations[engine_id] = generation
+
     def _read_blocks_for_req(self, req_id: str, meta: ReqMeta):
         assert meta.remote is not None and self.transfer_topo is not None
         engine_id = meta.remote.engine_id
@@ -221,12 +232,7 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
                 req_id, None, self._recv_failures, record_failed_transfer=False
             )
             return
-        generation = meta.remote.registration_generation
-        if self._remote_registration_generations.get(engine_id, 0) < generation:
-            # The remote registered its KV cache again, eg after a sleep.
-            if engine_id in self._remote_agents:
-                self._cleanup_remote_engine(engine_id, log_eviction=False)
-            self._remote_registration_generations[engine_id] = generation
+        self._prepare_remote_registration(meta)
         if engine_id not in self._remote_agents:
             # Also re-handshakes queued requests that outlived invalid-peer cleanup.
             self._background_nixl_handshake(req_id, engine_id, meta)
@@ -773,6 +779,7 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
             region_num_blocks=remote_region_num_blocks,
             pairs=(pairs.remote, pairs.remote if by_region else pairs.group),
             ssm_regions=pairs.remote_ssm_regions,
+            ple_region=pairs.remote_ple_region,
         )
         local_block_descs_ids = self._compute_desc_ids(
             block_ids=local_block_ids,

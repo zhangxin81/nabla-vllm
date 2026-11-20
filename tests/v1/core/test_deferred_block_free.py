@@ -29,7 +29,7 @@ from .utils import create_requests, create_scheduler, mock_kv
 pytestmark = pytest.mark.cpu_test
 
 # Allow overriding the model with a local path for offline environments.
-MODEL = os.environ.get("VLLM_TEST_DEFER_FREE_MODEL", "facebook/opt-125m")
+MODEL = os.environ.get("VLLM_TEST_DEFER_FREE_MODEL")
 STOP_TOKEN_ID = 42
 NUM_PROMPT_TOKENS = 33  # 3 blocks with block_size=16
 

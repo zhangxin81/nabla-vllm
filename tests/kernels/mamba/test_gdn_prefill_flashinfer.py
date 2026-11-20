@@ -28,6 +28,45 @@ from vllm.v1.attention.backends.gdn_attn import (  # noqa: E402
 from vllm.v1.attention.backends.utils import NULL_BLOCK_ID  # noqa: E402
 
 
+@pytest.mark.parametrize("num_tokens", [63, 64, 65, 129])
+def test_flashinfer_chunk_dispatch_writes_supplied_output(num_tokens):
+    """Chunk dispatch writes into the caller's view with identical output/state."""
+    from tests.v1.kv_connector.unit.utils import create_vllm_config
+    from vllm.config import set_current_vllm_config
+    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+        ChunkGatedDeltaRule,
+    )
+
+    config = create_vllm_config(max_model_len=256, dtype="bfloat16")
+    config.additional_config = {"gdn_prefill_backend": "flashinfer"}
+    with set_current_vllm_config(config):
+        dispatch = ChunkGatedDeltaRule()
+    assert dispatch.gdn_prefill_backend == "flashinfer"
+    torch.manual_seed(19)
+    q = F.normalize(torch.randn(1, num_tokens, 2, 128, device="cuda"), dim=-1)
+    k = F.normalize(torch.randn_like(q), dim=-1)
+    v = torch.randn(1, num_tokens, 4, 128, device="cuda")
+    q, k, v = q.bfloat16(), k.bfloat16(), v.bfloat16()
+    g = F.logsigmoid(torch.randn(1, num_tokens, 4, device="cuda"))
+    beta = torch.rand_like(g)
+    state = torch.randn(1, 4, 128, 128, device="cuda") * 0.01
+    cu_seqlens = torch.tensor([0, num_tokens], device="cuda", dtype=torch.int32)
+    expected, expected_state = dispatch(
+        q, k, v, g, beta, state, True, cu_seqlens=cu_seqlens
+    )
+    storage = torch.full(
+        (num_tokens + 2, 4, 128), 7, device="cuda", dtype=torch.bfloat16
+    )
+    output = storage[1:-1]
+    actual, actual_state = dispatch(
+        q, k, v, g, beta, state, True, cu_seqlens=cu_seqlens, core_attn_out=output
+    )
+    assert actual.data_ptr() == output.data_ptr()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_state, expected_state, rtol=0, atol=0)
+    torch.testing.assert_close(storage[[0, -1]], torch.full_like(storage[[0, -1]], 7))
+
+
 def test_flashinfer_gdn_prefill_passes_cu_seqlens_through(monkeypatch):
     """FlashInfer accepts int32 cu_seqlens; the wrapper must not cast them."""
     captured_cu_seqlens = None

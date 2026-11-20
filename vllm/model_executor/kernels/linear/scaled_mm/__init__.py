@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from vllm.model_executor.kernels.linear.scaled_mm.aiter import (
-    AiterInt8ScaledMMLinearKernel,
-)
 from vllm.model_executor.kernels.linear.scaled_mm.BlockScaledMMLinearKernel import (
     Fp8BlockScaledMMLinearKernel,
-)
-from vllm.model_executor.kernels.linear.scaled_mm.cpu import (
-    CPUFp8BlockScaledMMKernel,
-    CPUFp8PerTensorScaledMMLinearKernel,
-    CPUFP8W8A8ScaledMMLinearKernel,
-    CPUInt8ScaledMMLinearKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm.cutlass import (
     CutlassFP8ScaledMMLinearKernel,
@@ -28,9 +19,6 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
     PerTensorTorchFP8ScaledMMLinearKernel,
     RowWiseTorchFP8ScaledMMLinearKernel,
 )
-from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
-    ROCmFP8ScaledMMLinearKernel,
-)
 from vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel import (
     FP8ScaledMMLinearKernel,
     FP8ScaledMMLinearLayerConfig,
@@ -42,12 +30,6 @@ from vllm.model_executor.kernels.linear.scaled_mm.triton import (
     TritonFP8ScaledMMLinearKernel,
     TritonInt8ScaledMMLinearKernel,
 )
-from vllm.model_executor.kernels.linear.scaled_mm.xpu import (
-    XPUFp8BlockScaledMMKernel,
-)
-from vllm.model_executor.kernels.linear.scaled_mm.zentorch import (
-    ZentorchInt8ScaledMMLinearKernel,
-)
 
 __all__ = [
     "FP8ScaledMMLinearKernel",
@@ -56,8 +38,6 @@ __all__ = [
     "Int8ScaledMMLinearLayerConfig",
     "ScaledMMLinearKernel",
     "ScaledMMLinearLayerConfig",
-    "AiterInt8ScaledMMLinearKernel",
-    "CPUInt8ScaledMMLinearKernel",
     "CutlassFP8ScaledMMLinearKernel",
     "CutlassInt8ScaledMMLinearKernel",
     "FlashInferFP8ScaledMMLinearKernel",
@@ -65,13 +45,7 @@ __all__ = [
     "ChannelWiseTorchFP8ScaledMMLinearKernel",
     "PerTensorTorchFP8ScaledMMLinearKernel",
     "RowWiseTorchFP8ScaledMMLinearKernel",
-    "ROCmFP8ScaledMMLinearKernel",
     "TritonFP8ScaledMMLinearKernel",
     "TritonInt8ScaledMMLinearKernel",
-    "ZentorchInt8ScaledMMLinearKernel",
     "Fp8BlockScaledMMLinearKernel",
-    "CPUFp8BlockScaledMMKernel",
-    "CPUFp8PerTensorScaledMMLinearKernel",
-    "CPUFP8W8A8ScaledMMLinearKernel",
-    "XPUFp8BlockScaledMMKernel",
 ]

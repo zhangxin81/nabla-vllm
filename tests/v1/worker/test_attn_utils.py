@@ -1399,6 +1399,16 @@ def test_split_blocks_align_to_kernel_blocks(block_size, page_states):
     assert spec.get_block_stride_alignment() == max(page_states * 132, 1)
 
 
+@pytest.mark.parametrize(
+    ("spec_cls", "aligned"), [(MLAAttentionSpec, False), (SelfAddressedMLASpec, True)]
+)
+def test_only_splittable_token_caches_align_to_kernel_blocks(spec_cls, aligned):
+    """Only self-addressed token caches are padded to whole kernel blocks."""
+    group = _packed_group(1, 1152, [64], spec_cls=spec_cls)
+    spec = customize_attention_spec(group.backend, group.kv_cache_spec, "layer.0")
+    assert (spec.block_stride_alignment is not None) == aligned
+
+
 def test_packed_token_cache_without_slot_mapping_is_split():
     """A packed token cache that takes no slot mapping is split like a compressed
     one: its kernel blocks address the manager blocks' rows."""
@@ -1552,3 +1562,50 @@ def test_drafter_uses_the_kernel_block_size_the_cache_was_allocated_with(
         drafter, None, kv_cache_config, None, None, target_groups, kernel_block_sizes
     )
     assert built == {"draft": 128}
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_native_cache_byte_copies_preserve_other_resource_slots(device):
+    from vllm.v1.core.kv_cache_utils import KVCacheByteCopy
+
+    raw = torch.arange(192, dtype=torch.uint8, device=device)
+    expected = raw.clone()
+    expected[96:144] = expected[48:96]
+    expected[176:192] = expected[160:176]
+    copies = [KVCacheByteCopy(48, 96, 48), KVCacheByteCopy(160, 176, 16)]
+    copy_kv_cache_blocks_inplace([raw.view(12, 1, 1, 16)], 12, copies)
+    torch.testing.assert_close(raw, expected, rtol=0, atol=0)
+
+
+def test_native_cache_byte_copies_reject_cross_resource_overlap():
+    from vllm.v1.core.kv_cache_utils import KVCacheByteCopy
+
+    raw = torch.arange(192, dtype=torch.uint8)
+    before = raw.clone()
+    with pytest.raises(AssertionError, match="Overlapping cache copies"):
+        copy_kv_cache_blocks_inplace([raw], 12, [KVCacheByteCopy(48, 64, 48)])
+    torch.testing.assert_close(raw, before, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", ["cuda"])
+def test_native_cache_byte_zeroing_preserves_live_state_slots(device):
+    from vllm.v1.worker.utils import KVBlockZeroer
+
+    raw = torch.full((192,), 7, dtype=torch.uint8, device=device)
+    view = raw.view(12, 1, 1, 16)
+    zeroer = KVBlockZeroer(
+        torch.device(device),
+        [],
+        [],
+        {},
+        12,
+        arena_unit_view=view,
+        arena_null_bytes=48,
+    )
+    zeroer.warmup(12)
+    zeroer.zero_block_ids([(48, 16), (96, 48)])
+    expected = torch.full_like(raw, 7)
+    expected[:48] = 0
+    expected[48:64] = 0
+    expected[96:144] = 0
+    torch.testing.assert_close(raw, expected, rtol=0, atol=0)

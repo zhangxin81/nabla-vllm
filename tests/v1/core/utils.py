@@ -3,7 +3,7 @@
 
 import torch
 
-from tests.v1.kv_connector.unit.utils import MockKVConfig
+from tests.v1.kv_connector.unit.utils import MockKVConfig, scheduler_test_model
 from vllm.config import (
     CacheConfig,
     DiffusionConfig,
@@ -63,7 +63,7 @@ def mock_kv(matched_tokens: int, is_async: bool, num_defers_before_matching: int
 
 
 def create_scheduler(
-    model: str = "facebook/opt-125m",
+    model: str | None = None,
     max_num_seqs: int = 16,
     max_num_active_seqs: int | None = None,
     max_num_batched_tokens: int = 8192,
@@ -118,7 +118,7 @@ def create_scheduler(
 
     """
     model_config = ModelConfig(
-        model=model,
+        model=model or scheduler_test_model().name,
         dtype="float16",
         seed=42,
         skip_tokenizer_init=skip_tokenizer_init,

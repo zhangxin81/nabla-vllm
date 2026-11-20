@@ -25,22 +25,11 @@ def __getattr__(name: str) -> Any:
         "Qwen4ExpForConditionalGeneration",
         "Qwen4ExpMTP",
     }:
-        from vllm.platforms import current_platform
-
-        if current_platform.is_xpu() or current_platform.is_tpu():
-            raise NotImplementedError("Qwen4Exp currently supports CUDA and ROCm only")
-        if current_platform.is_rocm():
-            from .amd.model import (
-                Qwen4ExpForCausalLM,
-                Qwen4ExpForConditionalGeneration,
-            )
-            from .amd.mtp import Qwen4ExpMTP
-        else:
-            from .nvidia.model import (
-                Qwen4ExpForCausalLM,
-                Qwen4ExpForConditionalGeneration,
-            )
-            from .nvidia.mtp import Qwen4ExpMTP
+        from .nvidia.model import (
+            Qwen4ExpForCausalLM,
+            Qwen4ExpForConditionalGeneration,
+        )
+        from .nvidia.mtp import Qwen4ExpMTP
 
         return {
             "Qwen4ExpForCausalLM": Qwen4ExpForCausalLM,

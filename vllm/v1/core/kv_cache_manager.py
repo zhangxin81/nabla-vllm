@@ -14,7 +14,12 @@ from vllm.v1.core.kv_cache_coordinator import (
     get_kv_cache_coordinator,
 )
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
-from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy, trim_null_head
+from vllm.v1.core.kv_cache_utils import (
+    KVCacheBlock,
+    KVCacheBlockCopy,
+    KVCacheByteCopy,
+    trim_null_head,
+)
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
     MambaManager,
@@ -197,7 +202,7 @@ class KVCacheManager:
         # Watermark: minimum number of KV cache blocks to keep free when
         # admitting waiting/preempted requests, to avoid frequent preemptions.
         assert watermark >= 0.0, "watermark must be non-negative"
-        self.watermark_blocks = int(watermark * kv_cache_config.num_blocks)
+        self.watermark_blocks = int(watermark * self.block_pool.num_gpu_blocks)
         self.kv_cache_event_metadata = tuple(
             (
                 get_kv_cache_kind(group.manager_config, group.distinct_specs).value,
@@ -557,6 +562,8 @@ class KVCacheManager:
             required_blocks = num_blocks_to_allocate + watermark_blocks
             if required_blocks > self.block_pool.get_num_free_blocks():
                 return None
+            if not self.coordinator.allocation_fits(new_computed_block_list):
+                return None
 
         num_tokens_main_model = total_computed_tokens + num_new_tokens
         num_tokens_need_slot = min(
@@ -597,28 +604,33 @@ class KVCacheManager:
         if required_blocks > available_blocks:
             # Cannot allocate new blocks
             return None
+        if not self.coordinator.allocation_fits(new_computed_block_list, prepare=True):
+            return None
 
-        if (
-            new_computed_block_list is not self.empty_kv_cache_blocks.blocks
-            or num_external_computed_tokens > 0
-        ):
-            # Append the new computed blocks to the request blocks until now to
-            # avoid the case where the new blocks cannot be allocated.
-            self.coordinator.allocate_new_computed_blocks(
-                request_id=request.request_id,
-                new_computed_blocks=new_computed_block_list,
-                num_local_computed_tokens=num_local_computed_tokens,
-                num_external_computed_tokens=num_external_computed_tokens,
-                num_tokens_main_model=num_tokens_main_model,
-                skip_zeroing_group_ids=skip_zeroing_group_ids,
+        try:
+            if (
+                new_computed_block_list is not self.empty_kv_cache_blocks.blocks
+                or num_external_computed_tokens > 0
+            ):
+                # Touch hits in every group before allocating external blocks.
+                self.coordinator.allocate_new_computed_blocks(
+                    request_id=request.request_id,
+                    new_computed_blocks=new_computed_block_list,
+                    num_local_computed_tokens=num_local_computed_tokens,
+                    num_external_computed_tokens=num_external_computed_tokens,
+                    num_tokens_main_model=num_tokens_main_model,
+                    skip_zeroing_group_ids=skip_zeroing_group_ids,
+                )
+
+            new_blocks = self.coordinator.allocate_new_blocks(
+                request.request_id,
+                num_tokens_need_slot,
+                num_tokens_main_model,
+                num_encoder_tokens,
             )
-
-        new_blocks = self.coordinator.allocate_new_blocks(
-            request.request_id,
-            num_tokens_need_slot,
-            num_tokens_main_model,
-            num_encoder_tokens,
-        )
+        finally:
+            if self.coordinator.memory_arena is not None:
+                self.coordinator.memory_arena.allocation_plan = None
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
@@ -843,11 +855,13 @@ class KVCacheManager:
             truncated.append(list(group_blocks[:num_blocks]))
         return self.create_kv_cache_blocks(tuple(truncated))
 
-    def take_new_block_ids(self) -> list[int]:
+    def take_new_block_ids(self) -> list[int] | list[tuple[int, int]]:
         """Drain and return new attention block IDs for zeroing."""
         ids: list[int] = []
         for mgr in self.coordinator.single_type_managers:
-            ids.extend(mgr.take_new_block_ids())
+            new_ids = mgr.take_new_block_ids()
+            arena = self.coordinator.memory_arena
+            ids.extend(arena.byte_ranges(mgr.block_pool, new_ids) if arena else new_ids)
         return ids
 
     def record_blocks_for_zeroing(self, request_id: str, start_token: int) -> None:
@@ -866,18 +880,34 @@ class KVCacheManager:
 
     def take_kv_cache_block_copies(
         self,
-    ) -> tuple[list[KVCacheBlockCopy], list[KVCacheBlock]]:
+    ) -> tuple[list[KVCacheBlockCopy | KVCacheByteCopy], list[KVCacheBlock]]:
         """Drain pending copies and return their retained endpoints."""
         pending_copies: list[tuple[KVCacheBlock, KVCacheBlock]] = []
         for mgr in self.coordinator.single_type_managers:
             pending_copies.extend(mgr.take_pending_cow_copies())
-        copies = [
-            KVCacheBlockCopy(
-                src_block_id=source_block.block_id,
-                dst_block_id=cow_block.block_id,
+        copies = []
+        for source_block, cow_block in pending_copies:
+            arena = self.coordinator.memory_arena
+            if arena is None:
+                sources, destinations = [source_block.block_id], [cow_block.block_id]
+            else:
+                assert source_block.pool is not None and cow_block.pool is not None
+                source_pool, dest_pool = source_block.pool(), cow_block.pool()
+                assert source_pool is not None and dest_pool is not None
+                assert source_pool.block_stride_bytes == dest_pool.block_stride_bytes
+                stride = source_pool.block_stride_bytes
+                copies.append(
+                    KVCacheByteCopy(
+                        source_block.block_id * stride,
+                        cow_block.block_id * stride,
+                        stride,
+                    )
+                )
+                continue
+            copies.extend(
+                KVCacheBlockCopy(s, d)
+                for s, d in zip(sources, destinations, strict=True)
             )
-            for source_block, cow_block in pending_copies
-        ]
         retained_blocks = [block for pair in pending_copies for block in pair]
         return copies, retained_blocks
 

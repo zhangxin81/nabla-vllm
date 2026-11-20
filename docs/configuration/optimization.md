@@ -5,6 +5,20 @@ This guide covers optimization strategies and performance tuning for vLLM V1.
 !!! tip
     Running out of memory? Consult [this guide](./conserving_memory.md) on how to conserve memory.
 
+## NVIDIA GDN backends
+
+The Qwen3.8-Flash-Next GDN path supports `auto`, `triton`, `flashinfer`,
+and `cutedsl` in `additional_config.gdn_prefill_backend`. `auto` chooses
+FlashInfer on Hopper, including H20 and H100. Blackwell FlashInfer and
+CuteDSL selection retains their head-dimension and CUDA-runtime requirements.
+Explicit implementations that cannot run on the device fall back to Triton/FLA.
+CPU, XPU, SYCL, HIP, and AITER inference implementations have been removed.
+
+KV token pages and GDN state slots share a byte budget while retaining separate
+slot capacities. Prefix-checkpoint retention decides which token positions can
+be resumed; it does not set the physical page width. See
+[specialized hybrid-cache management](../design/specialized_hybrid_cache.md).
+
 ## Optimization Levels
 
 vLLM provides 4 optimization levels (`-O0`, `-O1`, `-O2`, `-O3`) that allow users to trade off startup time for performance:
@@ -138,6 +152,44 @@ llm = LLM(model="meta-llama/Llama-3.3-70B-Instruct", tensor_parallel_size=4)
 ```
 
 For models that are too large to fit on a single GPU (like 70B parameter models), tensor parallelism is essential.
+
+### Qwen3.8-Flash-Next HC Sequence Parallelism
+
+`--enable-hc-sp` shards Qwen3.8-Flash-Next's hyper-connection (HC) and
+per-layer embedding (PLE) computation across TP ranks. It reduces replicated
+prefill work, but its gather/scatter operations can add latency at small batches.
+
+On a single SM90 node, optionally enable `hc_sp_small_batch_fallback`, a boolean
+field in `--additional-config`, to keep HC token rows replicated when the
+physical token count is smaller than TP:
+
+```bash
+vllm serve Qwen/Qwen3.8-Flash-Next-FP8 \
+  --tensor-parallel-size 4 \
+  --enable-expert-parallel \
+  --moe-backend flashinfer_cutlass \
+  --enable-hc-sp \
+  -cc.mode=0 \
+  --additional-config '{"hc_sp_small_batch_fallback": true}'
+```
+
+The fallback defaults to `false`; omitting it preserves static HC-SP behavior.
+EP is enabled in this example but is not a requirement of the fallback.
+Larger batches retain the existing SP path. Selection uses the padded token
+dimension of each model forward, so request concurrency or input length alone
+does not determine the path. CUDA graph padding can move a batch above the
+threshold. KV and recurrent cache ownership remain unchanged across layouts.
+
+The fallback requires DP=1, PP=1, no context parallelism, no MoE sequence
+parallelism, no speculative decoding or LoRA, and a MoE backend other than
+`deep_gemm_mega_moe`. The example selects the validated `flashinfer_cutlass`
+backend. Use `-cc.mode=0` (`CompilationMode.NONE`) to disable `torch.compile`;
+CUDA graphs are supported.
+Unsupported explicit opt-ins fail during model construction.
+
+Validation covers the FP8 checkpoint on 4×H20 at TP4/DP1/EP4. Benchmark the
+intended workload: the fallback targets small-batch decode communication and
+does not guarantee lower TTFT for every request.
 
 ### Pipeline Parallelism (PP)
 

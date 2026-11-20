@@ -20,6 +20,7 @@ from vllm.v1.core.kv_cache_utils import (
     resolve_block_hashes,
     trim_null_head,
 )
+from vllm.v1.core.prefix_checkpoint_policy import mamba_checkpoint_mask
 from vllm.v1.hisparse.block_pool import SharedEventQueueBlockPool
 from vllm.v1.kv_cache_interface import (
     KVCacheGroup,
@@ -2062,36 +2063,14 @@ class MambaManager(SingleTypeKVCacheManager):
         boundary state is always kept so sparse retention does not defeat reuse.
         Decode states are handled by `cache_blocks_on_free` instead.
         """
-        if retention_interval is None or alignment_tokens is None:
-            # Dense caching or no alignment constraint imposed.
-            return None
-        mask = [False] * (end_block - start_block)
-
-        # (1) Segment-boundary states. Block ``i`` ends at token
-        # ``(i + 1) * block_size``.
-        segment_tokens = None if retention_interval == 0 else retention_interval
-        if segment_tokens is not None:
-            per_segment = segment_tokens // block_size
-            if per_segment <= 1:
-                # Interval at/below the block size: every block is a boundary.
-                return None
-            first_boundary = (
-                start_block + per_segment
-            ) // per_segment * per_segment - 1
-            for i in range(first_boundary - start_block, len(mask), per_segment):
-                mask[i] = True
-
-        # (2) Reachable-boundary states: the replay boundary (``num_prompt - 1``,
-        # capped by ``get_computed_blocks``) and any shared-prefix junction, both
-        # of which segments would otherwise skip under sparse retention. A Mamba
-        # hit needs exactly the single state block ending on the boundary.
-        for boundary_tokens in reachable_boundaries:
-            aligned = boundary_tokens // alignment_tokens * alignment_tokens
-            boundary_block = aligned // block_size - 1
-            if start_block <= boundary_block < end_block:
-                mask[boundary_block - start_block] = True
-
-        return mask
+        return mamba_checkpoint_mask(
+            start_block,
+            end_block,
+            alignment_tokens,
+            block_size,
+            retention_interval,
+            reachable_boundaries,
+        )
 
     def _remove_blocks_in_range(
         self, request_id: str, first_block: int, last_block: int
@@ -2284,6 +2263,14 @@ class MambaManager(SingleTypeKVCacheManager):
                 physical_block_cap = 1 + int(has_partial_hit) + checkpoint_block
                 if not blocks_allocated:
                     physical_block_cap += self.num_speculative_blocks
+                # The imported tail is still read when the first decode writes
+                # a new state block beyond that tail's logical boundary.
+                if (
+                    total_computed_tokens > num_local_computed_tokens
+                    and cdiv(num_tokens, self.block_size)
+                    > cdiv(total_computed_tokens, self.block_size)
+                ):
+                    physical_block_cap += 1
                 num_new_blocks = min(num_new_blocks, physical_block_cap)
 
             num_evictable_computed_blocks = self._get_num_evictable_blocks(

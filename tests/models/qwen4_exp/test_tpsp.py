@@ -3,6 +3,7 @@
 """Multi-GPU equivalence tests for Qwen4Exp HC and MoE sequence parallelism."""
 
 from dataclasses import MISSING, fields
+from itertools import accumulate
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,14 +13,18 @@ import torch.multiprocessing as mp
 from torch import nn
 from transformers import Qwen4ExpTextConfig
 
+from vllm import SamplingParams
 from vllm.platforms import current_platform
+from vllm.transformers_utils.utils import maybe_model_redirect
 
 if not current_platform.is_cuda_alike():
     pytest.skip("Qwen4Exp SP requires CUDA or ROCm", allow_module_level=True)
 
+from tests.models.utils import TokensTextLogprobs, check_logprobs_close
 from tests.utils import multi_gpu_test
 from vllm.config import (
     EngramConfig,
+    ModelConfig,
     ParallelConfig,
     VllmConfig,
     set_current_vllm_config,
@@ -30,6 +35,7 @@ from vllm.distributed import (
     initialize_model_parallel,
     tensor_model_parallel_all_reduce,
 )
+from vllm.distributed.parallel_state import graph_capture
 from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.linear import RowParallelLinear
 from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
@@ -38,20 +44,13 @@ from vllm.models.common.ops.sequence_parallel import (
     sp_padding_mask,
     sp_shard,
 )
+from vllm.models.qwen4_exp.nvidia import model as qwen4_model
+from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpDecoderLayer
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.attention.backends.short_conv_attn import PleShortConvAttentionMetadata
 from vllm.v1.worker.workspace import init_workspace_manager, reset_workspace_manager
 
 from .test_ple import _ConvBatchCase, _make_conv_metadata
-
-if current_platform.is_rocm():
-    from vllm.models.qwen4_exp.amd import model as qwen4_model
-    from vllm.models.qwen4_exp.amd.model import Qwen4ExpDecoderLayer
-else:
-    from vllm.models.qwen4_exp.nvidia import (  # type: ignore[no-redef]
-        model as qwen4_model,
-    )
-    from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpDecoderLayer
 
 
 class _TPAttentionProjection(nn.Module):
@@ -239,34 +238,7 @@ def _check_moe_sp(rank: int, config: VllmConfig) -> None:
     torch.testing.assert_close(actual, expected, atol=0.002, rtol=0.02)
 
 
-def _check_compiled_sp_ops() -> None:
-    """Compiled SP collectives stay correct for token counts unseen at trace time."""
-    from vllm.models.qwen4_exp.amd.ops.sequence_parallel import (
-        sp_reduce_scatter,
-        sp_shard,
-    )
-
-    def collectives(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        gathered = sp_all_gather(sp_shard(x) * 2)[: x.shape[0]]
-        reduced = sp_all_gather(sp_reduce_scatter(x))[: x.shape[0]]
-        return gathered, reduced
-
-    # vLLM drops Dynamo guards, so one trace must serve every token count.
-    compiled = torch.compile(
-        collectives,
-        fullgraph=True,
-        options={"guard_filter_fn": torch.compiler.skip_all_guards_unsafe},
-    )
-    traced = torch.randn(8, 16)
-    torch._dynamo.mark_dynamic(traced, 0)
-    compiled(traced)
-    for num_tokens in (7, 3, 1):
-        torch.manual_seed(num_tokens)
-        x = torch.randn(num_tokens, 16)
-        torch.testing.assert_close(compiled(x), collectives(x), atol=0, rtol=0)
-
-
-def _run_sp(rank: int, port: int, moe_sp: bool, compiled_ops: bool = False) -> None:
+def _run_sp(rank: int, port: int, moe_sp: bool) -> None:
     """Initialize rank-local runtime state and run one equivalence check."""
     torch.accelerator.set_device_index(rank)
     torch.set_num_threads(1)
@@ -286,8 +258,6 @@ def _run_sp(rank: int, port: int, moe_sp: bool, compiled_ops: bool = False) -> N
                 torch.set_default_dtype(torch.bfloat16)
                 if moe_sp:
                     _check_moe_sp(rank, config)
-                elif compiled_ops:
-                    _check_compiled_sp_ops()
                 else:
                     _check_decoder_ple(rank)
     finally:
@@ -308,8 +278,233 @@ def test_moe_sp_equivalence(monkeypatch) -> None:
     mp.spawn(_run_sp, args=(get_open_port(), True), nprocs=4)
 
 
-@pytest.mark.skipif(not current_platform.is_rocm(), reason="ROCm-only SP ops")
-@multi_gpu_test(num_gpus=2)
-def test_compiled_sp_ops_handle_untraced_token_counts() -> None:
-    """Padding in compiled SP collectives must not specialize on the traced size."""
-    mp.spawn(_run_sp, args=(get_open_port(), False, True), nprocs=2)
+def _run_ple_layout_transitions(rank: int, port: int, model_dir: str) -> None:
+    """Use real PLE modules and graph replay across full/sharded token layouts."""
+    from vllm.models.qwen4_exp.nvidia.ple_layer import Qwen4ExpPLELayer
+
+    device = torch.device("cuda", rank)
+    torch.accelerator.set_device_index(rank)
+    torch.set_num_threads(1)
+    config = VllmConfig(
+        model_config=ModelConfig(
+            model=model_dir,
+            skip_tokenizer_init=True,
+            dtype="bfloat16",
+            max_model_len=128,
+        ),
+        parallel_config=ParallelConfig(tensor_parallel_size=4, enable_hc_sp=True),
+        engram_config=EngramConfig(cpu_offload=False),
+    )
+    init_distributed_environment(
+        world_size=4,
+        rank=rank,
+        local_rank=rank,
+        distributed_init_method=f"tcp://127.0.0.1:{port}",
+    )
+    try:
+        init_workspace_manager(device)
+        with set_current_vllm_config(config):
+            initialize_model_parallel(tensor_model_parallel_size=4)
+            with torch.device(device), torch.inference_mode():
+                layers = [
+                    Qwen4ExpPLELayer(
+                        config.model_config.hf_text_config,
+                        config,
+                        prefix=f"layout_{enabled}.ple",
+                        use_sequence_parallel=enabled,
+                    )
+                    for enabled in (False, True)
+                ]
+                states = []
+                for layer in layers:
+                    # Dyadic parameters make the projection exact across row counts.
+                    for param in layer.parameters():
+                        values = torch.arange(param.numel(), device=device) % 7 - 3
+                        param.copy_(values.reshape(param.shape) / 256)
+                    state = torch.zeros(
+                        4,
+                        layer.hc_hidden_size,
+                        layer.conv_state_len,
+                        dtype=torch.bfloat16,
+                    )
+                    if not is_conv_state_dim_first():
+                        state = state.transpose(-1, -2).contiguous()
+                    layer.kv_cache = (state,)
+                    states.append(state)
+                for step, case in enumerate(
+                    (
+                        _ConvBatchCase(prefill_query_lens=(5,)),
+                        _ConvBatchCase(num_decodes=1),
+                        _ConvBatchCase(num_decodes=2),
+                        _ConvBatchCase(num_decodes=1, prefill_query_lens=(3,)),
+                        _ConvBatchCase(num_decodes=1),
+                    )
+                ):
+                    layout, num_tokens = _make_conv_metadata(case, device)
+                    required = {
+                        f.name: None
+                        for f in fields(PleShortConvAttentionMetadata)
+                        if f.default is MISSING and f.default_factory is MISSING
+                    }
+                    metadata = PleShortConvAttentionMetadata(
+                        **(required | vars(layout))
+                    )
+                    ids = (torch.arange(num_tokens) * 17 + step) % 128
+                    lengths = [1] * case.num_decodes + list(case.prefill_query_lens)
+                    qsl = torch.tensor(
+                        [0, *accumulate(lengths)],
+                        dtype=torch.int32,
+                    )
+                    context = torch.zeros(len(lengths), 2, dtype=torch.int64)
+                    hidden = (
+                        torch.arange(num_tokens * 512).reshape(num_tokens, 512) % 13 - 6
+                    ).to(torch.bfloat16) / 8
+                    use_sp = num_tokens >= 4
+                    with set_forward_context({layers[0].prefix: metadata}, config):
+                        expected = layers[0](hidden, ids, qsl, context).clone()
+                    local = sp_shard(hidden) if use_sp else hidden
+                    initial_state = states[1].clone()
+                    with set_forward_context({layers[1].prefix: metadata}, config):
+                        layers[1](
+                            local, ids, qsl, context, use_sequence_parallel=use_sp
+                        )
+                        states[1].copy_(initial_state)
+                        graph = torch.cuda.CUDAGraph()
+                        with graph_capture(device), torch.cuda.graph(graph):
+                            actual = layers[1](
+                                local,
+                                ids,
+                                qsl,
+                                context,
+                                use_sequence_parallel=use_sp,
+                            )
+                        states[1].copy_(initial_state)
+                        graph.replay()
+                        if use_sp:
+                            actual = sp_all_gather(actual)[:num_tokens]
+                        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+                        torch.testing.assert_close(states[1], states[0], atol=0, rtol=0)
+    finally:
+        reset_workspace_manager()
+        cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="NVIDIA PLE implementation")
+@multi_gpu_test(num_gpus=4)
+def test_ple_cache_survives_token_layout_transitions(tmp_path) -> None:
+    """SP layout changes preserve PLE output and conv state under graph replay."""
+    config = Qwen4ExpTextConfig(
+        architectures=["Qwen4ExpForCausalLM"],
+        vocab_size=128,
+        eos_token_id=1,
+        hidden_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        layer_types=["linear_attention"],
+        hc_count=4,
+        hc_lowrank=16,
+        num_experts=4,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        shared_expert_intermediate_size=128,
+        ple_layer_ids=[1],
+        ple_embed_dim=128,
+        heads_per_ngram=2,
+        ngram_size=3,
+        ngram_vocab_size_base=32,
+        make_ngram_vocab_size_divisible_by=64,
+    )
+    config.save_pretrained(tmp_path)
+    mp.spawn(
+        _run_ple_layout_transitions,
+        args=(get_open_port(), str(tmp_path)),
+        nprocs=4,
+    )
+
+
+_hc_layout_rows: list[tuple[int, int]] = []
+
+
+def _record_hc_layout(module, args, kwargs) -> None:
+    _hc_layout_rows.append(
+        (kwargs["positions"].shape[-1], kwargs["hidden_states"].shape[0])
+    )
+
+
+def _observe_hc_layout(model) -> None:
+    from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpDecoderLayer
+
+    _hc_layout_rows.clear()
+    layer = next(m for m in model.modules() if isinstance(m, Qwen4ExpDecoderLayer))
+    layer.register_forward_pre_hook(_record_hc_layout, with_kwargs=True)
+
+
+def _observed_hc_layout(model) -> list[tuple[int, int]]:
+    return _hc_layout_rows
+
+
+@pytest.mark.skipif(
+    not current_platform.is_cuda()
+    or not current_platform.is_device_capability_family(90),
+    reason="HC-SP small-batch fallback requires SM90",
+)
+@pytest.mark.usefixtures("enable_pickle")
+@multi_gpu_test(num_gpus=4)
+def test_hc_sp_small_batch_serving(vllm_runner) -> None:
+    """Real weights preserve generation and prefix reuse across HC layouts."""
+    model = maybe_model_redirect("Qwen/Qwen3.8-Flash-Next-FP8")
+    prompt = (
+        "The following sentence is context. " * 256
+        + "Question: What is 17 plus 23? Answer:"
+    )
+    params = SamplingParams(
+        temperature=0, max_tokens=16, ignore_eos=True, logprobs=5, seed=42
+    )
+    outputs: list[list[TokensTextLogprobs]] = []
+    for fallback in (True, False):
+        with vllm_runner(
+            model,
+            tensor_parallel_size=4,
+            enable_expert_parallel=True,
+            distributed_executor_backend="mp",
+            max_model_len=4096,
+            max_num_seqs=4,
+            max_num_batched_tokens=8192,
+            block_size=None,
+            kv_cache_memory_bytes=2 << 30,
+            enable_chunked_prefill=True,
+            enable_prefix_caching=True,
+            mamba_cache_mode="align",
+            enable_hc_sp=True,
+            additional_config={"hc_sp_small_batch_fallback": fallback},
+            enforce_eager=True,
+        ) as runner:
+            runner.apply_model(_observe_hc_layout)
+            runs: list[TokensTextLogprobs] = []
+            for step, count in enumerate((1, 2, 4, 1)):
+                responses = runner.llm.generate(
+                    [prompt] * count, params, use_tqdm=False
+                )
+                if step == 3:
+                    cached_tokens = responses[0].num_cached_tokens
+                    assert cached_tokens is not None and cached_tokens > 0
+                runs.extend(
+                    (list(out.token_ids), out.text, out.logprobs)
+                    for response in responses
+                    for out in response.outputs
+                )
+            layouts = runner.apply_model(_observed_hc_layout)
+            assert len(layouts) == 4
+            for rows in layouts:
+                assert (2, 2 if fallback else 1) in rows
+                assert (4, 1) in rows
+                assert any(tokens > 4 for tokens, _ in rows)
+            outputs.append(runs)
+    check_logprobs_close(
+        outputs_0_lst=outputs[0],
+        outputs_1_lst=outputs[1],
+        name_0="adaptive_hc_sp",
+        name_1="static_hc_sp",
+    )

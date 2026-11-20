@@ -13,6 +13,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1.nixl.utils import (
     kv_lease_extension,
 )
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
+from vllm.v1.core.single_type_kv_cache_manager import MambaManager
 
 from .local_fastpath import get_boot_id
 
@@ -168,13 +170,43 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
                     # a full prefix cache hit on the local node. We need to call
                     # send_notif in _read_blocks to free the memory on the remote node.
 
-                    unhashed_local_block_ids: BlockIds = (
-                        blocks.get_unhashed_block_ids_all_groups()
-                        if num_external_tokens > 0
-                        else ()
+                    # A stream-ordered load shares admission with the next
+                    # forward. Exclude slots allocated for that future work.
+                    imported_tokens = (
+                        self._get_remote_prefill_token_count(request.num_prompt_tokens)
+                        if params.get("do_remote_prefill")
+                        else min(
+                            params.get("remote_num_tokens") or 0,
+                            request.num_prompt_tokens,
+                        )
                     )
+                    import_groups = []
+                    parallel = self.vllm_config.parallel_config
+                    for group, allocated in zip(
+                        self.kv_cache_config.kv_cache_groups, blocks.blocks, strict=True
+                    ):
+                        block_size = group.block_size
+                        if group.dcp_sharded:
+                            block_size *= (
+                                parallel.decode_context_parallel_size
+                                * parallel.prefill_context_parallel_size
+                            )
+                        prefix = allocated[: cdiv(imported_tokens, block_size)]
+                        if issubclass(group.manager_cls, MambaManager):
+                            prefix = prefix[-1:]
+                        import_groups.append(prefix)
                     local_block_ids = self.get_exchange_clipped_blocks(
-                        unhashed_local_block_ids
+                        tuple(
+                            [
+                                block.block_id
+                                for block in group
+                                if block.block_hash is None and not block.is_null
+                            ]
+                            for group in import_groups
+                        )
+                        if num_external_tokens > 0
+                        else (),
+                        clip_ssm=False,
                     )
                     # Blocks covered by the local prefix cache, per KV cache group.
                     # Each count fixes where that group's DCP slice starts, which the

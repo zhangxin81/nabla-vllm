@@ -69,7 +69,7 @@ def main():
 
     vllm.entrypoints.cli.benchmark.main.maybe_exec_rust_bench()
 
-    # For 'vllm bench *': use CPU instead of UnspecifiedPlatform by default
+    # Benchmark clients can run without a GPU inference backend.
     if len(sys.argv) > 1 and sys.argv[1] == "bench":
         logger.debug(
             "Bench command detected, must ensure current platform is not "
@@ -78,11 +78,11 @@ def main():
         from vllm import platforms
 
         if platforms.current_platform.is_unspecified():
-            from vllm.platforms.cpu import CpuPlatform
+            from vllm.platforms.interface import MetadataPlatform
 
-            platforms.current_platform = CpuPlatform()
+            platforms.current_platform = MetadataPlatform()
             logger.info(
-                "Unspecified platform detected, switching to CPU Platform instead."
+                "No inference device detected; using the host metadata platform."
             )
 
     parser = FlexibleArgumentParser(

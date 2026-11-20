@@ -18,9 +18,6 @@ from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
 from vllm.model_executor.models.config import (
     Qwen4ExpForConditionalGenerationConfig,
 )
-from vllm.models.qwen4_exp.amd.model_state import (
-    Qwen4ExpModelState as AmdQwen4ExpModelState,
-)
 from vllm.models.qwen4_exp.nvidia.model import (
     Qwen4ExpForCausalLM,
     Qwen4ExpForConditionalGeneration,
@@ -82,7 +79,7 @@ def test_moe_sp_rejects_pipeline_parallel() -> None:
 
 
 @spawn_new_process_for_each_test
-@pytest.mark.parametrize("backend", ["amd", "nvidia"])
+@pytest.mark.parametrize("backend", ["nvidia"])
 @pytest.mark.parametrize("use_sp", [False, True])
 def test_qwen4_exp_mtp_returns_sample_and_multi_streams(
     backend: str, use_sp: bool
@@ -165,7 +162,7 @@ def test_qwen4_exp_mtp_returns_sample_and_multi_streams(
 
 
 @spawn_new_process_for_each_test
-@pytest.mark.parametrize("backend", ["amd", "nvidia"])
+@pytest.mark.parametrize("backend", ["nvidia"])
 def test_qwen4_exp_mtp_remaps_mixed_precision_layer_indices(backend: str) -> None:
     mtp_module = import_module(f"vllm.models.qwen4_exp.{backend}.mtp")
 
@@ -187,7 +184,7 @@ def test_qwen4_exp_mtp_remaps_mixed_precision_layer_indices(backend: str) -> Non
 
 
 @spawn_new_process_for_each_test
-@pytest.mark.parametrize("backend", ["amd", "nvidia"])
+@pytest.mark.parametrize("backend", ["nvidia"])
 def test_qwen4_exp_mtp_remaps_quark_layer_names(backend: str) -> None:
     from vllm.model_executor.layers.fused_moe import (
         RoutedExperts,
@@ -362,8 +359,8 @@ def test_qkv_proj_mapping_allows_bf16_indexer(model_cls) -> None:
 
 @pytest.mark.parametrize(
     "state_cls",
-    [Qwen4ExpModelState, AmdQwen4ExpModelState],
-    ids=["nvidia", "amd"],
+    [Qwen4ExpModelState],
+    ids=["nvidia"],
 )
 def test_qwen4_exp_model_state_pads_replayed_request_range(state_cls) -> None:
     """The PLE buffers must be valid for the capture-time request range.

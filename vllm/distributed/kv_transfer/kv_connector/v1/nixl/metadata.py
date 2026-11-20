@@ -61,8 +61,9 @@ HB_NOTIF_PREFIX = "HB:"
 #  17: Export remote_blocks_expiry_time for P blocks too, plus
 #      remote_lease_extension; the consumer gates every remote read on it
 #  18: Add optional same-host CUDA IPC allocation metadata
+#  19: Preserve per-region capacities for independent native-stride pools
 #
-NIXL_CONNECTOR_VERSION: int = 18
+NIXL_CONNECTOR_VERSION: int = 19
 
 
 @dataclass(slots=True)

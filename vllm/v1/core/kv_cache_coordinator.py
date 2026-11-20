@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from vllm.utils.math_utils import cdiv, round_down
 from vllm.v1.core.block_pool import BlockPool
+from vllm.v1.core.cache_memory_arena import CacheMemoryArena
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
     BlockHash,
@@ -12,6 +13,7 @@ from vllm.v1.core.kv_cache_utils import (
     partial_hash_hits_enabled,
 )
 from vllm.v1.core.prefix_cache_index import PrefixCacheIndex
+from vllm.v1.core.prefix_checkpoint_policy import replay_boundaries
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
     FullAttentionManager,
@@ -22,7 +24,6 @@ from vllm.v1.core.single_type_kv_cache_manager import (
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     KVCacheConfig,
-    get_reusable_prefix_length,
     prefix_lookup_groups,
 )
 from vllm.v1.request import Request
@@ -60,28 +61,6 @@ def _validate_prefix_cache_retention_interval(
         )
 
 
-def replay_boundaries(
-    num_prompt_tokens: int,
-    num_hash_lookahead_tokens: int,
-) -> tuple[int, int]:
-    """Prompt positions that sparse retention keeps reachable.
-
-    - Resend of the same prompt: `get_reusable_prefix_length`, which leaves
-      the last token for logits and the lookahead tokens for the hash.
-    - Request extending the prompt (e.g. the next turn): the full prompt. With
-      Mamba and L >= 2 this adds nothing: the state is freed before its
-      lookahead hash exists.
-
-    `reachable_block_mask` floors both to the hit alignment, so they keep
-    different tails only when a boundary falls in the prompt's last
-    `max(1, num_hash_lookahead_tokens)` tokens.
-    """
-    resend = get_reusable_prefix_length(
-        num_prompt_tokens, num_hash_lookahead_tokens=num_hash_lookahead_tokens
-    )
-    return resend, num_prompt_tokens
-
-
 class KVCacheCoordinator(ABC):
     """Coordinate the KV cache of different KV cache groups."""
 
@@ -111,22 +90,43 @@ class KVCacheCoordinator(ABC):
         self.scheduler_block_size = scheduler_block_size
 
         self.prefix_cache_index = PrefixCacheIndex()
-        self.block_pool = BlockPool(
-            num_gpu_blocks=kv_cache_config.num_blocks,
-            enable_caching=enable_caching,
-            hash_block_size=hash_block_size,
-            enable_kv_cache_events=enable_kv_cache_events,
-            metrics_collector=metrics_collector,
-            num_hash_lookahead_tokens=num_hash_lookahead_tokens,
-            prefix_index=self.prefix_cache_index,
+        self.memory_arena = None
+        if kv_cache_config.pool_block_strides is not None:
+            self.memory_arena = CacheMemoryArena(
+                kv_cache_config.arena_size_bytes, kv_cache_config.pool_block_strides
+            )
+        pools: dict[int, BlockPool] = {}
+        group_pools = []
+        strides = kv_cache_config.pool_block_strides or (0,) * max(
+            1, len(kv_cache_config.kv_cache_groups)
         )
+        for group_id, stride in enumerate(strides):
+            if stride not in pools:
+                pools[stride] = BlockPool(
+                    num_gpu_blocks=(
+                        kv_cache_config.num_blocks_for_group(group_id)
+                        if stride
+                        else kv_cache_config.num_blocks
+                    ),
+                    enable_caching=enable_caching,
+                    hash_block_size=hash_block_size,
+                    enable_kv_cache_events=enable_kv_cache_events,
+                    metrics_collector=metrics_collector,
+                    num_hash_lookahead_tokens=num_hash_lookahead_tokens,
+                    prefix_index=self.prefix_cache_index,
+                    memory_arena=self.memory_arena,
+                    block_stride_bytes=stride,
+                )
+            group_pools.append(pools[stride])
+        self.resource_pools = tuple(pools.values())
+        self.block_pool = self.memory_arena or self.resource_pools[0]
 
         self.single_type_managers = tuple(
             create_single_type_manager(
                 kv_cache_group,
                 max_in_flight_tokens=max_in_flight_tokens,
                 max_model_len=max_model_len,
-                block_pool=self.block_pool,
+                block_pool=group_pools[i],
                 enable_caching=enable_caching,
                 kv_cache_group_id=i,
                 dcp_world_size=dcp_world_size,
@@ -191,14 +191,14 @@ class KVCacheCoordinator(ABC):
             The number of blocks to allocate.
 
         """
-        num_blocks_to_allocate = 0
+        allocation_needs: list[tuple[BlockPool, int]] = []
         if self.retention_interval != 0:
             prefill_end = 0
         for i, manager in enumerate(self.single_type_managers):
             if isinstance(manager, CrossAttentionManager):
                 # For cross-attention, we issue a single static allocation
                 # of blocks based on the number of encoder input tokens.
-                num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
+                count = manager.get_num_blocks_to_allocate(
                     request_id,
                     num_encoder_tokens,
                     [],
@@ -213,9 +213,9 @@ class KVCacheCoordinator(ABC):
                         request_id, num_tokens
                     )
                     if reservation is not None:
-                        num_blocks_to_allocate += reservation
+                        allocation_needs.append((manager.block_pool, reservation))
                         continue
-                num_blocks_to_allocate += manager.get_num_blocks_to_allocate(
+                count = manager.get_num_blocks_to_allocate(
                     request_id,
                     num_tokens,
                     new_computed_blocks[i],
@@ -225,7 +225,31 @@ class KVCacheCoordinator(ABC):
                     apply_admission_cap=apply_admission_cap,
                     prefill_end=prefill_end,
                 )
-        return num_blocks_to_allocate
+            allocation_needs.append((manager.block_pool, count))
+        self.allocation_needs = allocation_needs
+        if self.memory_arena is None:
+            return sum(count for _, count in allocation_needs)
+        return sum(
+            count * pool.block_stride_bytes // self.memory_arena.unit_bytes
+            for pool, count in allocation_needs
+        )
+
+    def allocation_fits(
+        self,
+        new_computed_blocks: tuple[Sequence[KVCacheBlock], ...],
+        prepare: bool = False,
+    ) -> bool:
+        if self.memory_arena is None:
+            return True
+        needs = [
+            (pool, max(0, count - sum(not b.is_null and b.ref_cnt == 0 for b in hits)))
+            for (pool, count), hits in zip(self.allocation_needs, new_computed_blocks)
+        ]
+        return self.memory_arena.can_allocate(
+            needs,
+            (block for hits in new_computed_blocks for block in hits),
+            prepare=prepare,
+        )
 
     def allocate_new_computed_blocks(
         self,
@@ -359,6 +383,8 @@ class KVCacheCoordinator(ABC):
 
     def reset_prefix_cache(self) -> bool:
         """Reset each manager's pool once."""
+        if self.memory_arena is not None:
+            return self.memory_arena.reset_prefix_cache()
         pools = dict.fromkeys(
             manager.block_pool for manager in self.single_type_managers
         )

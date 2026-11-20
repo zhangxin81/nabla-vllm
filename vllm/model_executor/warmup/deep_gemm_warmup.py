@@ -44,14 +44,9 @@ from vllm.v1.worker.workspace import current_workspace_manager
 
 if TYPE_CHECKING:
     from vllm.models.deepseek_v4.nvidia.model import DeepseekV4MoE
-    from vllm.models.glm5next.common.model import Glm5NextMoE
-    from vllm.models.kimi_k3.nvidia.model import KimiMoE
-    from vllm.models.minimax_m3.nvidia.model import MiniMaxM3MoE
     from vllm.models.qwen4_exp.nvidia.mega_moe import Qwen4ExpMegaMoeBlock
 
-    MegaMoEModule: TypeAlias = (
-        DeepseekV4MoE | KimiMoE | MiniMaxM3MoE | Qwen4ExpMegaMoeBlock | Glm5NextMoE
-    )
+    MegaMoEModule: TypeAlias = DeepseekV4MoE | Qwen4ExpMegaMoeBlock
 
 
 def _generate_optimal_warmup_m_values(
@@ -170,7 +165,7 @@ def _fused_moe_grouped_gemm_may_use_deep_gemm(module: torch.nn.Module) -> bool:
 
 # Model construction already imports the model modules. Avoid importing them here.
 def _mega_moe_uses_mega_gate(module: torch.nn.Module) -> "TypeGuard[DeepseekV4MoE]":
-    # DeepSeek-V4 routes with bf16_mega_gate, Kimi K3 and MiniMax M3 with GateLinear.
+    # DeepSeek-V4 routes with bf16_mega_gate.
     dsv4 = sys.modules.get("vllm.models.deepseek_v4.nvidia.model")
     return dsv4 is not None and isinstance(module, dsv4.DeepseekV4MoE)
 
@@ -181,16 +176,7 @@ def _mega_moe_may_use_deep_gemm(
     if _mega_moe_uses_mega_gate(module):
         return module.use_native_mega_moe
     qwen4_exp = sys.modules.get("vllm.models.qwen4_exp.nvidia.mega_moe")
-    if qwen4_exp is not None and isinstance(module, qwen4_exp.Qwen4ExpMegaMoeBlock):
-        return True
-    kimi = sys.modules.get("vllm.models.kimi_k3.nvidia.model")
-    minimax = sys.modules.get("vllm.models.minimax_m3.nvidia.model")
-    glm = sys.modules.get("vllm.models.glm5next.common.model")
-    return (
-        (kimi is not None and isinstance(module, kimi.KimiMoE))
-        or (minimax is not None and isinstance(module, minimax.MiniMaxM3MoE))
-        or (glm is not None and isinstance(module, glm.Glm5NextMoE))
-    ) and module.use_mega_moe
+    return qwen4_exp is not None and isinstance(module, qwen4_exp.Qwen4ExpMegaMoeBlock)
 
 
 FP8_GEMM_NT_WARMUP_CACHE: set[torch.Size] = set()

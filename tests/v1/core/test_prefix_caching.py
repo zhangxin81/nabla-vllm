@@ -1087,10 +1087,12 @@ def _make_hisparse_scheduler(
 ) -> tuple[Scheduler, KVCacheManager]:
     """A scheduler over a HiSparse manager whose async mock connector matches
     `matched_tokens`."""
-    from .utils import create_scheduler, mock_kv
+    from transformers import Qwen4ExpTextConfig
 
-    (tmp_path / "config.json").write_text(
-        '{"architectures": ["OPTForCausalLM"], "model_type": "opt"}'
+    from .utils import create_scheduler, mock_kv, scheduler_test_model
+
+    Qwen4ExpTextConfig.from_pretrained(scheduler_test_model().name).save_pretrained(
+        tmp_path
     )
     scheduler = create_scheduler(
         model=str(tmp_path),
@@ -6880,3 +6882,194 @@ def test_estimate_cached_tokens_tracks_hashed_prefix_of_each_group():
     full_attention_blocks = manager.get_blocks(request.request_id).blocks[0]
     manager.block_pool.evict_blocks({full_attention_blocks[3].block_id})
     assert manager.estimate_cached_tokens(request) == 3 * block_size
+
+
+def _native_resource_pools(capacity=192):
+    from vllm.v1.core.cache_memory_arena import CacheMemoryArena
+
+    index = PrefixCacheIndex()
+    arena = CacheMemoryArena(capacity, [16, 48])
+    pools = tuple(
+        BlockPool(
+            capacity // stride,
+            True,
+            4,
+            prefix_index=index,
+            memory_arena=arena,
+            block_stride_bytes=stride,
+        )
+        for stride in (16, 48)
+    )
+    return arena, pools
+
+
+def test_state_slots_and_token_pages_borrow_the_same_byte_budget():
+    arena, (tokens, states) = _native_resource_pools()
+    state = states.get_new_blocks(1)[0]
+    assert arena.memory.free_bytes == 96
+    pages = tokens.get_new_blocks(6)
+    assert arena.memory.free_bytes == 0
+    assert all(
+        not (state.block_id * 48 <= b.block_id * 16 < (state.block_id + 1) * 48)
+        for b in pages
+    )
+    tokens.free_blocks(pages)
+    states.free_blocks([state])
+    assert arena.memory.free_bytes == 144
+    assert arena.memory.ranges == [(48, 192)]
+    assert len(tokens.get_new_blocks(9)) == 9
+
+
+def test_overlapping_allocation_invalidates_cached_state_and_reuse_reader():
+    arena, (tokens, states) = _native_resource_pools()
+    state = states.get_new_blocks(1)[0]
+    key = make_block_hash_with_group_id(BlockHash(b"state"), 1)
+    state.set_block_hash(key)
+    states.cached_block_hash_to_block.insert(key, state)
+    reused = []
+    states.unpin_blocks([state], lambda block: reused.append(block.block_id))
+    pages = tokens.get_new_blocks(9)
+    assert states.cached_block_hash_to_block.get_one_block(key) is None
+    assert reused == [state.block_id]
+    tokens.free_blocks(pages)
+    assert arena.memory.free_bytes == 144
+
+
+def test_arena_admission_failure_does_not_consume_or_evict_any_pool():
+    arena, (tokens, states) = _native_resource_pools()
+    before = arena.memory.ranges.copy()
+    assert not arena.can_allocate([(tokens, 7), (states, 1)], prepare=True)
+    assert arena.memory.ranges == before
+    assert arena.memory.free_bytes == 144
+    assert tokens.get_num_free_blocks() == 9
+    assert states.get_num_free_blocks() == 3
+    assert arena.allocation_plan is None
+
+
+def test_admission_plan_survives_allocation_in_a_different_group_order():
+    arena, (tokens, states) = _native_resource_pools()
+    assert arena.can_allocate([(tokens, 3), (states, 1)], prepare=True)
+    state = states.get_new_blocks(1)
+    pages = tokens.get_new_blocks(3)
+    arena.allocation_plan = None
+    assert arena.memory.free_bytes == 48
+    states.free_blocks(state)
+    tokens.free_blocks(pages)
+    assert arena.memory.free_bytes == 144
+
+
+def test_live_state_references_prevent_overlapping_page_reuse():
+    arena, (tokens, states) = _native_resource_pools()
+    state = states.get_new_blocks(1)[0]
+    states.touch([state])
+    states.free_blocks([state])
+    assert tokens.get_num_free_blocks() == 6
+    assert not arena.reset_prefix_cache()
+    assert state.ref_cnt == 1
+    states.free_blocks([state])
+    assert tokens.get_num_free_blocks() == 9
+    assert arena.reset_prefix_cache()
+
+
+def test_byte_ranges_reject_double_release_and_overlapping_reservation():
+    from vllm.v1.core.cache_memory_arena import FreeByteRanges
+
+    ranges = FreeByteRanges(144, 16)
+    ranges.reserve(48, 48)
+    with pytest.raises(ValueError, match="overlaps"):
+        ranges.reserve(64, 16)
+    assert ranges.free_bytes == 80
+    ranges.release(48, 48)
+    with pytest.raises(ValueError, match="unowned"):
+        ranges.release(48, 48)
+    assert ranges.ranges == [(16, 144)]
+
+
+def _native_cache_manager():
+    from tests.v1.core.utils import full_layer, mamba_layer
+    from vllm.v1.kv_cache_interface import KVCacheGroup
+
+    attention = AttentionSpec(
+        block_size=4, num_kv_heads=1, head_size=1, dtype=torch.float16
+    )
+    state = MambaSpec(block_size=4, shapes=((12,),), dtypes=(torch.float32,))
+    groups = [
+        KVCacheGroup.from_layers({"attention": full_layer(attention)}),
+        KVCacheGroup.from_layers(
+            {
+                "gdn": mamba_layer(
+                    state, mamba_cache_mode="align", num_speculative_blocks=0
+                )
+            }
+        ),
+    ]
+    config = KVCacheConfig(
+        4, [], groups, pool_block_strides=(16, 48), arena_size_bytes=192
+    )
+    return KVCacheManager(config, 32, scheduler_block_size=4, hash_block_size=4)
+
+
+def test_native_cache_manager_prices_token_pages_and_gdn_slots_separately():
+    manager = _native_cache_manager()
+    request = make_request("native", list(range(8)), 4, sha256)
+    assert manager.allocate_slots(request, 4, delay_cache_blocks=True) is not None
+    attention_id, state_id = (
+        ids[-1] for ids in manager.get_block_ids(request.request_id)
+    )
+    assert not (state_id * 48 <= attention_id * 16 < (state_id + 1) * 48)
+    assert manager.block_pool.memory.free_bytes == 80
+    request.num_computed_tokens = 4
+    assert manager.allocate_slots(request, 4, delay_cache_blocks=True) is not None
+    assert manager.block_pool.memory.free_bytes == 16
+    manager.free(request)
+    assert manager.usage == 0
+    assert manager.reset_prefix_cache()
+
+
+def test_native_cache_manager_rejects_unaffordable_request_before_any_allocation():
+    manager = _native_cache_manager()
+    request = make_request("too-large", list(range(32)), 4, sha256)
+    assert (
+        manager.allocate_slots(
+            request, 4, full_sequence_must_fit=True, delay_cache_blocks=True
+        )
+        is None
+    )
+    assert manager.block_pool.memory.free_bytes == 144
+    assert manager.get_block_ids(request.request_id) == ([], [])
+    assert manager.reset_prefix_cache()
+
+
+def test_arena_reserves_large_state_holes_before_small_token_pages():
+    """A small page must not fragment the only available full state slot."""
+    arena, (tokens, states) = _native_resource_pools()
+    first, second = states.get_new_blocks(2)
+    live_pages = tokens.get_new_blocks(2)
+    states.free_blocks([first])
+    assert arena.memory.free_bytes == 64
+    assert arena.can_allocate([(tokens, 1), (states, 1)], prepare=True)
+    page = tokens.get_new_blocks(1)
+    state = states.get_new_blocks(1)
+    arena.allocation_plan = None
+    assert arena.memory.free_bytes == 0
+    tokens.free_blocks([*live_pages, *page])
+    states.free_blocks([second, *state])
+    assert arena.memory.ranges == [(48, 192)]
+
+
+@pytest.mark.parametrize("external_tokens,new_tokens", [(8, 1), (7, 0), (8, 0)])
+def test_native_gdn_import_reserves_both_loaded_and_writable_state(
+    external_tokens, new_tokens
+):
+    """P/D import and the first decode must use one complete admission plan."""
+    manager = _native_cache_manager()
+    request = make_request("import", list(range(9)), 4, sha256)
+    allocated = manager.allocate_slots(
+        request,
+        new_tokens,
+        num_external_computed_tokens=external_tokens,
+        delay_cache_blocks=True,
+    )
+    assert allocated is not None
+    manager.free(request)
+    assert manager.usage == 0

@@ -76,11 +76,6 @@ def get_mla_prefill_backend(
             ),
         )
 
-    if current_platform.is_cpu():
-        # CPUs have a single fixed MLA prefill backend, so explicit backend
-        # configuration does not apply; always auto-select via the platform.
-        return _auto_select_mla_prefill_backend(selector_config)
-
     attention_config = vllm_config.attention_config if vllm_config is not None else None
     if (
         attention_config is not None

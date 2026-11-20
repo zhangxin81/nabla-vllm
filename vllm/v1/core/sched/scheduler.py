@@ -1501,7 +1501,11 @@ class Scheduler(SchedulerInterface):
                     ),
                     skip_zeroing_group_ids=(
                         self.connector.get_loaded_kv_cache_group_ids(request)
-                        if load_kv_async and self.connector is not None
+                        if num_external_computed_tokens > 0
+                        and self.connector is not None
+                        and (
+                            load_kv_async or self.connector.supports_stream_ordered_load
+                        )
                         else ()
                     ),
                     num_encoder_tokens=num_encoder_tokens,

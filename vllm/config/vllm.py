@@ -3362,7 +3362,13 @@ class VllmConfig:
             else self.kv_transfer_config.kv_cache_access()
         )
         unsupported = None
-        if not current_platform.is_cuda_alike():
+        if self.model_config is not None and getattr(
+            self.model_config.hf_config, "model_type", None
+        ) in {"qwen4_exp", "deepseek_v41"}:
+            unsupported = (
+                "native cache page and state-slot arenas use stable CUDA allocations"
+            )
+        elif not current_platform.is_cuda_alike():
             unsupported = "it is only supported on CUDA and ROCm"
         elif cache_config.kv_cache_memory_bytes is not None:
             unsupported = (

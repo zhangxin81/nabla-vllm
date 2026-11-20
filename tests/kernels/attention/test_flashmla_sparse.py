@@ -4,6 +4,96 @@ import pytest
 import torch
 
 
+@pytest.mark.parametrize("rows", [1, 7])
+def test_physical_selection_output_buffers_match_allocation_and_graph_replay(rows):
+    """Reuse storage without stale slots, including padding and new block tables."""
+    from vllm.models.deepseek_v41.common.ops.cache_utils import (
+        compute_global_topk_indices_and_lens,
+    )
+
+    device = "cuda"
+    topk = torch.tensor([[0, 3, 5, -1]], dtype=torch.int32, device=device).repeat(
+        rows, 1
+    )
+    reqs = torch.arange(rows, dtype=torch.int32, device=device)
+    table = torch.arange(rows * 3, dtype=torch.int32, device=device).reshape(rows, 3)
+    valid = reqs % 2 == 0
+    indices = torch.full((rows + 1, 8), -99, dtype=torch.int32, device=device)
+    lengths = torch.full((rows + 1,), -99, dtype=torch.int32, device=device)
+    buffers = (indices[:rows, :4], lengths[:rows])
+
+    def reuse():
+        return compute_global_topk_indices_and_lens(
+            topk, reqs, table, 2, valid, output_buffers=buffers
+        )
+
+    for _ in range(3):
+        reuse()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        reuse()
+    for change in (0, 11):
+        table.add_(change)
+        expected = compute_global_topk_indices_and_lens(topk, reqs, table, 2, valid)
+        graph.replay()
+        for actual, reference in zip(buffers, expected):
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+        assert torch.all(indices[rows:] == -99)
+        assert torch.all(indices[:, 4:] == -99)
+        assert lengths[rows] == -99
+
+
+def test_shared_physical_selection_tracks_the_last_writer_and_forward():
+    """A→B→A must recompute A after B overwrites the shared output buffer."""
+    from vllm.models.deepseek_v41.common.ops.cache_utils import (
+        PhysicalSelectionCache,
+        compute_global_topk_indices_and_lens,
+    )
+
+    cache = PhysicalSelectionCache(2, 4, torch.device("cuda"))
+    topk = torch.tensor([[0, 1, 3, -1]], dtype=torch.int32, device="cuda")
+    reqs = torch.zeros(1, dtype=torch.int32, device="cuda")
+    table = torch.tensor([[1, 2]], dtype=torch.int32, device="cuda")
+    valid = torch.ones(1, dtype=torch.bool, device="cuda")
+    forward, group_a, group_b, swa = object(), object(), object(), object()
+    for metadata, source, offset, context in (
+        (group_a, 0, 0, forward),
+        (group_b, 1, 10, forward),
+        (group_a, 0, 20, forward),
+        (group_a, 0, 30, object()),
+    ):
+        table.fill_(offset)
+        actual = cache.get(
+            topk,
+            reqs,
+            table,
+            2,
+            valid,
+            context=context,
+            source_layer=source,
+            kv_metadata=metadata,
+            swa_metadata=swa,
+        )
+        expected = compute_global_topk_indices_and_lens(topk, reqs, table, 2, valid)
+        for current, reference in zip(actual, expected):
+            torch.testing.assert_close(current, reference, rtol=0, atol=0)
+        assert (
+            cache.get(
+                topk,
+                reqs,
+                table,
+                2,
+                valid,
+                context=context,
+                source_layer=source,
+                kv_metadata=metadata,
+                swa_metadata=swa,
+            )
+            is actual
+        )
+
+
 @pytest.mark.parametrize("sm120", [False, True])
 def test_deepseek_v4_c128a_adaptive_width_has_capture_stable_stride(
     monkeypatch: pytest.MonkeyPatch,

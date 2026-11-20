@@ -7,7 +7,6 @@ from typing import Any, ParamSpec, TypeVar
 import torch
 
 from vllm import envs
-from vllm._aiter_ops import rocm_aiter_ops
 from vllm.compilation.passes.utility.post_cleanup import PostCleanupPass
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.logger import init_logger
@@ -18,18 +17,7 @@ from .ir.clone_elimination import UnsafeCloneEliminationPass
 from .ir.lowering_pass import VllmIRLoweringPass
 from .vllm_inductor_pass import VllmInductorPass, VllmPatternMatcherPass
 
-if rocm_aiter_ops.is_enabled() or rocm_aiter_ops.is_rdna_aiter_enabled():
-    from .fusion.allreduce_rms_fusion import (
-        RocmAiterAllReduceFusionPass,
-    )
-    from .fusion.rocm_aiter_fusion import (
-        MLADualRMSNormFusionPass,
-        RocmAiterRMSNormQuantFusionPass,
-        RocmAiterSiluMulFp8GroupQuantFusionPass,
-        RocmAiterTritonAddRMSNormPadFusionPass,
-    )
-
-if current_platform.is_cuda_alike() or current_platform.is_xpu():
+if current_platform.is_cuda():
     from .fusion.add_rms_fusion import (
         AddRMSNormFusionPass,
         RMSNormReshapeFusionPass,
@@ -37,7 +25,7 @@ if current_platform.is_cuda_alike() or current_platform.is_xpu():
     from .fusion.qk_norm_rope_fusion import QKNormRoPEFusionPass
     from .utility.split_coalescing import SplitCoalescingPass
 
-if current_platform.is_cuda_alike():
+if current_platform.is_cuda():
     from .fusion.act_quant_fusion import ActivationQuantFusionPass
     from .fusion.attn_quant_fusion import AttnQuantFusionPass
     from .fusion.mla_attn_quant_fusion import MLAAttnQuantFusionPass
@@ -47,20 +35,8 @@ if current_platform.is_cuda_alike():
     from .fusion.rope_kvcache_fusion import RopeKVCacheFusionPass
     from .utility.scatter_split_replace import ScatterSplitReplacementPass
 
-if current_platform.is_rocm() and rocm_aiter_ops.is_enabled():
-    from vllm.platforms.rocm import on_gfx950
-
-    from .fusion.muse_glimmer_qk_rope_cache_fusion import (
-        MuseGlimmerQkRopeCacheFusionPass,
-    )
-    from .fusion.muse_glimmer_sandwich_norm_fusion import MuseSandwichNormFusionPass
-
 if current_platform.is_cuda():
     from .fusion.allreduce_rms_fusion import AllReduceFusionPass
-
-if current_platform.is_xpu():
-    from .fusion.act_quant_fusion import ActivationQuantFusionPass
-    from .fusion.rms_quant_fusion import RMSNormQuantFusionPass
 
 from .inductor_pass import (
     CustomGraphPass,
@@ -171,18 +147,8 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
             if enable_transformers_norm_canonicalization:
                 self.passes += [AddRMSNormFusionPass(config)]
 
-            if self.pass_config.fuse_act_padding and (
-                rocm_aiter_ops.is_enabled() or rocm_aiter_ops.is_rdna_aiter_enabled()
-            ):
-                # Run the more specific RMSNorm+router-pad fusion before
-                # AR+RMS, since both consume fused_add_rms_norm.
-                self.passes += [RocmAiterTritonAddRMSNormPadFusionPass(config)]
-
             if self.pass_config.fuse_allreduce_rms:
-                if rocm_aiter_ops.is_enabled():
-                    self.passes += [RocmAiterAllReduceFusionPass(config)]
-                else:
-                    self.passes += [AllReduceFusionPass(config)]
+                self.passes += [AllReduceFusionPass(config)]
 
             if enable_transformers_norm_canonicalization:
                 # Let AR+RMS match before moving output reshapes ahead of the
@@ -190,58 +156,15 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
                 self.passes += [RMSNormReshapeFusionPass(config)]
 
             if self.pass_config.fuse_norm_quant:
-                if (
-                    rocm_aiter_ops.is_enabled()
-                    or rocm_aiter_ops.is_rdna_aiter_enabled()
-                ):
-                    self.passes += [
-                        RocmAiterRMSNormQuantFusionPass(config),
-                    ]
                 self.passes += [RMSNormQuantFusionPass(config)]
 
             if self.pass_config.fuse_act_quant:
                 self.passes += [ActivationQuantFusionPass(config)]
-                if (
-                    rocm_aiter_ops.is_enabled()
-                    or rocm_aiter_ops.is_rdna_aiter_enabled()
-                ):
-                    self.passes += [RocmAiterSiluMulFp8GroupQuantFusionPass(config)]
 
-            muse_sandwich_norm = (
-                current_platform.is_rocm()
-                and rocm_aiter_ops.is_enabled()
-                and on_gfx950()
-                and model_config is not None
-                and model_config.dtype == torch.bfloat16
-                and model_config.architecture
-                in {
-                    "MuseGlimmerForCausalLM",
-                    "MuseGlimmerForConditionalGeneration",
-                }
-            )
-            if muse_sandwich_norm:
-                self.passes += [MuseSandwichNormFusionPass(config)]
-
-            muse_qk_rope_cache = (
-                current_platform.is_rocm()
-                and rocm_aiter_ops.is_enabled()
-                and model_config is not None
-                and model_config.architecture
-                in {
-                    "MuseGlimmerForCausalLM",
-                    "MuseGlimmerForConditionalGeneration",
-                }
-            )
-            if self.pass_config.fuse_qk_norm_rope_kvcache or muse_qk_rope_cache:
+            if self.pass_config.fuse_qk_norm_rope_kvcache:
                 self.passes += [SplitCoalescingPass(config)]
                 self.passes += [ScatterSplitReplacementPass(config)]
-                if muse_qk_rope_cache:
-                    self.passes += [MuseGlimmerQkRopeCacheFusionPass(config)]
-                if self.pass_config.fuse_qk_norm_rope_kvcache:
-                    self.passes += [QkNormRopeKvCacheFusionPass(config)]
-
-            if self.pass_config.fuse_mla_dual_rms_norm and rocm_aiter_ops.is_enabled():
-                self.passes += [MLADualRMSNormFusionPass(config)]
+                self.passes += [QkNormRopeKvCacheFusionPass(config)]
 
             if self.pass_config.fuse_rope_kvcache:
                 self.passes += [SplitCoalescingPass(config)]

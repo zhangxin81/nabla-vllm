@@ -1167,6 +1167,18 @@ class Platform:
                 kernel_block_alignment_size, checkpoint_alignment
             )
 
+        if getattr(model_config.hf_config, "model_type", None) == "qwen4_exp":
+            # State slot bytes are independent of the attention token page.
+            cache_config.block_size = lcm(
+                backend_block_alignment, cache_config.block_size
+            )
+            if cache_config.mamba_cache_mode == "align":
+                cache_config.mamba_block_size = lcm(
+                    cache_config.block_size, checkpoint_alignment
+                )
+            cache_config.mamba_page_size_padded = None
+            return
+
         # Models that pack every layer's page into one block row (BLHNC) size
         # the row themselves; no page is padded then.
         packed_block_size = None

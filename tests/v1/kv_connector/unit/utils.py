@@ -4,6 +4,7 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import count
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import Mock
@@ -68,6 +69,46 @@ if TYPE_CHECKING:
 EOS_TOKEN_ID = 50256
 
 
+@lru_cache(maxsize=1)
+def scheduler_test_model() -> tempfile.TemporaryDirectory:
+    """Local target-model metadata for scheduler tests that do not load weights."""
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast, Qwen4ExpTextConfig
+
+    directory = tempfile.TemporaryDirectory(prefix="nabla-scheduler-qwen-")
+    config = Qwen4ExpTextConfig(
+        vocab_size=65536,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        layer_types=["full_attention", "full_attention"],
+        num_experts=4,
+        num_experts_per_tok=2,
+        eos_token_id=EOS_TOKEN_ID,
+        hc_count=2,
+        hc_lowrank=4,
+        ple_layer_ids=[],
+        max_position_embeddings=131072,
+    )
+    config.architectures = ["Qwen4ExpForCausalLM"]
+    config.save_pretrained(directory.name)
+    tokenizer = Tokenizer(
+        WordLevel({f"t{i}": i for i in range(config.vocab_size)}, unk_token="t0")
+    )
+    tokenizer.pre_tokenizer = Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        eos_token=f"t{EOS_TOKEN_ID}",
+        pad_token="t0",
+    ).save_pretrained(directory.name)
+    return directory
+
+
 def create_mock_connector() -> Mock:
     connector = Mock()
     connector.get_external_cache_hit_sources.side_effect = lambda request, num_tokens: (
@@ -128,7 +169,7 @@ def assert_scheduler_empty(scheduler: Scheduler):
 
 
 def create_vllm_config(
-    model: str = "facebook/opt-125m",
+    model: str | None = None,
     max_num_seqs: int = 16,
     max_num_batched_tokens: int = 64,
     block_size: int = 16,
@@ -149,7 +190,10 @@ def create_vllm_config(
 ) -> VllmConfig:
     """Initialize VllmConfig For Testing."""
     model_config = ModelConfig(
-        model=model, dtype=dtype, seed=42, hf_overrides=hf_overrides or {}
+        model=model or scheduler_test_model().name,
+        dtype=dtype,
+        seed=42,
+        hf_overrides=hf_overrides or {},
     )
     scheduler_config = SchedulerConfig(
         max_num_seqs=max_num_seqs,

@@ -16,6 +16,7 @@ from tests.v1.attention.utils import (
     create_vllm_config,
     register_mamba_layers,
 )
+from tests.v1.kv_connector.unit.utils import scheduler_test_model
 from vllm.config import SpeculativeConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.v1.attention.backend import CommonAttentionMetadata
@@ -156,7 +157,7 @@ def _create_gdn_builder(
 ) -> GDNAttentionMetadataBuilder:
     """Create a GDNAttentionMetadataBuilder with minimal config."""
     vllm_config = create_vllm_config(
-        model_name="Qwen/Qwen3.5-0.8B",
+        model_name=scheduler_test_model().name,
         block_size=BLOCK_SIZE,
     )
     vllm_config.compilation_config.cudagraph_mode = (
@@ -473,7 +474,7 @@ def _create_checkpoint_builder_and_batch(
     num_spec: int, prefix_match_unit: int | None = 16
 ) -> tuple[GDNAttentionMetadataBuilder, CommonAttentionMetadata, dict]:
     vllm_config = create_vllm_config(
-        model_name="Qwen/Qwen3.5-0.8B",
+        model_name=scheduler_test_model().name,
         block_size=BLOCK_SIZE,
     )
     if num_spec > 0:

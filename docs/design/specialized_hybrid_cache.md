@@ -1,7 +1,8 @@
 # CUDA specialization for Qwen3.8 and DeepSeek V4.1
 
 This fork targets Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA CUDA
-GPUs, including H20, H100 and B200. The initial upstream baseline is
+GPUs, including H20, H100 and B200. The current upstream baseline is
+`f8ff2135e5c9a1121e05c91820cfbdbe3d467427`. The initial specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`.
 
 Imported upstream contributions and their validation scope are recorded in the
@@ -14,7 +15,7 @@ decisions. A prefix hash identifies committed input history. A pool owns
 the physical resource used to resume that history. A checkpoint policy
 decides which positions have reusable recurrent or compressor state.
 
-The first refactor introduces an engine-owned `PrefixCacheIndex`. Each
+The coordinator owns a `PrefixCacheIndex`. Each
 physical `BlockPool` binds a view of this index. Pools retain independent
 local IDs and free lists. The index's internal IDs are never sent to GPU
 block tables or connectors. Thus token page 1 and state slot 1 can be
@@ -26,15 +27,14 @@ retain their physical owners. Resetting one pool removes only its entries;
 it leaves another pool's pinned and cached resources intact. Cross-pool
 touches and frees update the actual owner's references and free list.
 
-The hybrid coordinator creates the shared index. The existing HiSparse host
-pool also binds it, exercising multiple physical owners through the existing
-allocation path. This refactor preserves current GPU cache geometry and
-checkpoint behavior.
+The HiSparse host pool also binds the shared index. Its host allocations keep
+their own budget. Device pools use a common `CacheMemoryArena` with an exact
+byte ledger and pool-specific strides.
 
-## Allocation migration
+## Independent allocations over stable views
 
-The next allocation change uses a common byte budget with resource-specific
-allocation units:
+Target models use the common byte budget with resource-specific allocation
+units:
 
 | Resource | Allocation unit | Retention constraint |
 | --- | --- | --- |
@@ -44,20 +44,39 @@ allocation units:
 | DeepSeek sparse/compressor state | Its native state or page | Compression, shared-cache and replay boundaries |
 | Draft cache | Draft model's native unit | Draft window and acceptance semantics |
 
-The budget must price actual backing bytes, including alignment, padding,
-live-request state and in-flight transfer/copy references. It must neither
-treat a state slot as a token page nor reserve a fixed KV/GDN fraction without
-a capacity policy. Admission checks must succeed for every resource family
-before any request allocation is committed.
+Every device pool has a native stride and a local ID space. The planner creates
+stable tensor views over one backing allocation. A pool-local slot owns the
+byte interval `[id * stride, (id + 1) * stride)`. The null region reserves the
+largest stride; its contents are cleared during warmup. Live references reserve
+bytes, while unreferenced cached slots remain reclaimable by any resource pool.
 
-Physical allocation, per-pool admission, worker zero/copy geometry and NIXL
-region counts must migrate together. Prefix checkpoints must remain pinned
-until every reader and transfer fence has completed. CUDA Graph buffers and
-views need stable addresses throughout replay.
+Admission first prices all groups in bytes, then plans their aligned intervals
+from largest stride to smallest. Hits are reserved before planning new slots.
+Every group consumes the same plan even when its allocation order differs.
+Unsuccessful admission commits no allocations. The plan is discarded at the
+end of allocation, including exceptional exits.
 
-The independent state allocator and byte-budget arena are not yet wired to
-the model runner in this first refactor. Removing attention/state page-size
-coupling requires that migration, plus model and transfer validation.
+A write through one pool invalidates overlapping cached entries in other pools.
+The shared prefix index maintains the cached-slot membership used by this
+invalidation; it does not scan every virtual token slot when the index is sparse.
+
+Worker initialization and copy-on-write use byte ranges. A GDN slot is copied
+as its native byte range, without expanding it into token-page IDs. Retained
+copy and transfer references keep these intervals live until their fences
+complete. CUDA Graphs retain the same backing and view addresses.
+
+NIXL protocol 19 advertises each region's capacity and stride. Imported IDs
+cover only the actual loaded prefix; a synchronous import excludes slots
+reserved for the following decode. GDN receives the state at the prefix's
+logical end, with speculative scratch columns excluded by position.
+Registration generations are checked before a synchronous handshake installs
+new handles, so a first load cannot invalidate its own connection and run
+state preparation before the transfer has been submitted.
+
+Checkpoint retention lives in `prefix_checkpoint_policy.py`. It selects
+committed token positions from retention intervals and reachable replay
+boundaries. The state allocator supplies physical slots for those positions.
+Explicit extensible-cache mode is rejected for the stable arena.
 
 ## SGLang references
 

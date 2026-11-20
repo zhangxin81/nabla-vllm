@@ -8,7 +8,6 @@ from typing import Literal
 
 import torch
 
-from vllm._aiter_ops import rocm_aiter_ops
 from vllm.config import VllmConfig
 from vllm.model_executor.layers.mamba.abstract import (
     get_kv_cache_checkpoint_alignment,
@@ -132,7 +131,6 @@ class GDNAttentionMetadata:
     prefill_query_start_loc: torch.Tensor | None = None
     prefill_state_indices: torch.Tensor | None = None
     prefill_has_initial_state: torch.Tensor | None = None
-    aiter_prefill_metadata: object | None = None
 
     # The following attributes are for triton implementation of causal_conv1d
     nums_dict: dict | None = None
@@ -180,11 +178,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             _resolve_gdn_prefill_backend,
         )
 
-        self.gdn_prefill_backend: Literal[
-            "triton", "flashinfer", "cutedsl", "aiter_flydsl", "sycl", "hip"
-        ]
+        self.gdn_prefill_backend: Literal["triton", "flashinfer", "cutedsl"]
         _, self.gdn_prefill_backend = _resolve_gdn_prefill_backend(vllm_config)
-        self._check_chunk_metadata_override(type(self), self.gdn_prefill_backend)
         # Only the Qwen GDN layer opts in on FlashInfer; KDA layers sharing this
         # backend export checkpoints their own way.
         checkpoint_alignment = self.checkpoint_alignment
@@ -208,7 +203,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         # update_block_table() keeps the source group's batch-level FULL graph
         # buffers, which is safe because the runner reuses metadata at capture.
         self.supports_update_block_table = (
-            device.type in ("cuda", "xpu")
+            device.type == "cuda"
             # Not isinstance: KDA's RecoverSSM/checkpoint metadata is per group.
             and type(self) is GDNAttentionMetadataBuilder
         )
@@ -264,32 +259,6 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             (self.decode_cudagraph_max_bs,),
             dtype=torch.int32,
             device=device,
-        )
-
-    @staticmethod
-    def _check_chunk_metadata_override(
-        builder_cls: type["GDNAttentionMetadataBuilder"], backend: str
-    ) -> None:
-        """Reject a subclass whose chunk metadata the AITER path would skip.
-
-        AITER brings its own varlen prefill metadata and never calls
-        `_build_chunk_metadata`, so a builder that overrides it would lose
-        that override without a word. No in-tree subclass can get here --
-        `_resolve_gdn_prefill_backend` only selects this backend for models
-        with 128-dim GDN key and value heads, which the KDA builders are not --
-        but a future one should be told rather than quietly ignored.
-        """
-        if backend != "aiter_flydsl":
-            return
-        if (
-            builder_cls._build_chunk_metadata
-            is GDNAttentionMetadataBuilder._build_chunk_metadata
-        ):
-            return
-        raise RuntimeError(
-            f"{builder_cls.__name__} builds its own FLA chunk metadata, which "
-            "the 'aiter_flydsl' GDN prefill backend does not use. Select a "
-            "different gdn_prefill_backend for this model."
         )
 
     def _build_chunk_metadata(
@@ -538,7 +507,6 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
         prefill_query_start_loc: torch.Tensor | None = None
         prefill_state_indices: torch.Tensor | None = None
         prefill_has_initial_state: torch.Tensor | None = None
-        aiter_prefill_metadata: object | None = None
         if num_prefills > 0:
             # In a mixed non-spec batch, decodes are peeled off to the recurrent
             # kernel (decode-first front slice), so build chunk metadata from the
@@ -560,18 +528,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu
                 prefill_state_indices = non_spec_state_indices_tensor
 
-            if self.gdn_prefill_backend == "aiter_flydsl":
-                # AITER carries its own reusable varlen metadata and has no use
-                # for FLA's chunk indices, so it replaces them rather than
-                # extending what _build_chunk_metadata returns.
-                assert prefill_query_start_loc_cpu is not None
-                aiter_prefill_metadata = (
-                    rocm_aiter_ops.build_gdn_flydsl_prefill_metadata(
-                        torch.diff(prefill_query_start_loc_cpu).tolist(),
-                        cu_seqlens=prefill_query_start_loc,
-                    )
-                )
-            elif self.gdn_prefill_backend != "flashinfer":
+            if self.gdn_prefill_backend != "flashinfer":
                 # FlashInfer's chunk kernel consumes cu_seqlens directly and
                 # never reads chunk_indices/chunk_offsets, so skip the FLA
                 # metadata (CPU compute + H2D copies) entirely.
@@ -606,14 +563,6 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             if spec_sequence_masks_cpu is not None:
                 request_rows = (~spec_sequence_masks_cpu).nonzero().flatten().tolist()
             checkpoint = self.checkpoint_builder.build(m, request_rows)
-            if checkpoint is not None and self.gdn_prefill_backend == "aiter_flydsl":
-                # FlyDSL cannot store checkpoints, so this step runs the
-                # Triton/FLA prefill, which needs FLA's chunk metadata.
-                chunk_indices, chunk_offsets = self._build_chunk_metadata(
-                    prefill_query_start_loc,
-                    prefill_query_start_loc_cpu,
-                    query_start_loc.device,
-                )
 
         flashinfer_checkpoint_plan: GDNFlashInferCheckpointPlan | None = None
         if checkpoint is not None and self.plan_flashinfer_checkpoints:
@@ -719,7 +668,6 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             prefill_query_start_loc=prefill_query_start_loc,
             prefill_state_indices=prefill_state_indices,
             prefill_has_initial_state=prefill_has_initial_state,
-            aiter_prefill_metadata=aiter_prefill_metadata,
             spec_query_start_loc=spec_query_start_loc,
             non_spec_query_start_loc=non_spec_query_start_loc,
             spec_state_indices_tensor=spec_state_indices_tensor,

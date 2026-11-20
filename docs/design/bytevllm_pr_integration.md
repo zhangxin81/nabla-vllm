@@ -1,7 +1,8 @@
 # bytevllm downstream PR integration
 
-This integration preserves the CUDA specialization and shared prefix index on
-upstream baseline `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`. Source PRs are pinned
+The current integration uses upstream baseline
+`f8ff2135e5c9a1121e05c91820cfbdbe3d467427`. The original specialization used
+`898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`. Source PRs are pinned
 below so later upstream updates can be compared without importing an old branch's
 unrelated history. It does not merge or modify the upstream PRs.
 
@@ -30,9 +31,10 @@ already in the baseline.
 
 NIXL descriptor handles remain owned by the current per-PP-stage structures.
 Lease-expiry checks, source lifetime tracking, and M-RoPE initialization are
-preserved. Protocol version **18** includes the optional IPC allocation metadata;
-version 17 was already used by upstream lease metadata. P and D must run the same
-revision. IPC remains disabled unless both ends explicitly opt in; see the
+preserved. Protocol version **19** carries independent region capacities and
+strides in addition to the IPC allocation metadata introduced in version 18.
+P and D must run the same revision. IPC remains disabled unless both ends
+explicitly opt in; see the
 [NIXL usage guide](../features/nixl_connector_usage.md).
 
 FP8 changes are applied to `csrc/quantization/w8a8/fp8/common.cu`, the current
@@ -47,6 +49,10 @@ context-write description. The proxy reset documentation keeps the current DCP
 configuration rules.
 
 ## Validation scope
+
+The results below describe the original integration. The new native arena and
+combined PR adaptations are being validated separately on H100; they do not
+inherit a passing result from these historical runs.
 
 Host validation uses the existing uv-managed Python environment and
 `VLLM_TARGET_DEVICE=empty`. This mode has no inference backend.

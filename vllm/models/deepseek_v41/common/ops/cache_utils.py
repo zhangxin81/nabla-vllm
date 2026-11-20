@@ -729,12 +729,57 @@ def dequantize_and_gather_k_cache(
     )
 
 
+class PhysicalSelectionCache:
+    """One authoritative selection for shared buffers within a forward pass."""
+
+    def __init__(self, rows: int, topk: int, device: torch.device) -> None:
+        self.indices = torch.empty(rows, topk, dtype=torch.int32, device=device)
+        self.lengths = torch.empty(rows, dtype=torch.int32, device=device)
+        self._context: object | None = None
+        self._key: tuple[int, ...] | None = None
+        self._selection: tuple[torch.Tensor, torch.Tensor] | None = None
+
+    def invalidate(self) -> None:
+        self._context = self._key = self._selection = None
+
+    def get(
+        self,
+        topk_indices: torch.Tensor,
+        token_to_req: torch.Tensor,
+        block_table: torch.Tensor,
+        block_size: int,
+        is_valid: torch.Tensor,
+        *,
+        context: object,
+        source_layer: int,
+        kv_metadata: object,
+        swa_metadata: object,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = topk_indices.shape[0]
+        key = (source_layer, id(kv_metadata), id(swa_metadata), block_size, rows)
+        if self._context is context and self._key == key:
+            assert self._selection is not None
+            return self._selection
+        self._selection = compute_global_topk_indices_and_lens(
+            topk_indices,
+            token_to_req,
+            block_table,
+            block_size,
+            is_valid,
+            output_buffers=(self.indices[:rows], self.lengths[:rows]),
+        )
+        self._context, self._key = context, key
+        return self._selection
+
+
 def compute_global_topk_indices_and_lens(
     topk_indices: torch.Tensor,
     token_to_req_indices: torch.Tensor,
     block_table: torch.Tensor,
     block_size: int,
     is_valid_token: torch.Tensor,
+    *,
+    output_buffers: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Map local topk indices to global KV cache slots and count valid entries.
 
@@ -744,8 +789,15 @@ def compute_global_topk_indices_and_lens(
     3. Masking padding tokens to length 0
     """
     num_tokens = topk_indices.shape[0]
-    global_topk_indices = torch.empty_like(topk_indices)
-    topk_lens = torch.empty(num_tokens, dtype=torch.int32, device=topk_indices.device)
+    if output_buffers is None:
+        global_topk_indices = torch.empty_like(topk_indices)
+        topk_lens = torch.empty(
+            num_tokens, dtype=torch.int32, device=topk_indices.device
+        )
+    else:
+        global_topk_indices, topk_lens = output_buffers
+        assert global_topk_indices.shape == topk_indices.shape
+        assert topk_lens.shape == (num_tokens,)
     _compute_global_topk_indices_and_lens_kernel[(num_tokens,)](
         global_topk_indices,
         global_topk_indices.stride(0),
