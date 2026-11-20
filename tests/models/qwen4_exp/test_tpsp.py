@@ -476,7 +476,6 @@ def test_hc_sp_small_batch_serving(vllm_runner) -> None:
             kv_cache_memory_bytes=2 << 30,
             enable_chunked_prefill=True,
             enable_prefix_caching=True,
-            mamba_cache_mode="align",
             enable_hc_sp=True,
             additional_config={"hc_sp_small_batch_fallback": fallback},
             enforce_eager=True,

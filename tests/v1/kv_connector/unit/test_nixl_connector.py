@@ -122,7 +122,7 @@ def test_sync_import_receives_prefix_state_before_next_decode_slot(
             ["gdn"],
             MambaSpec(block_size=4, shapes=((12,),), dtypes=(torch.float32,)),
             manager_config=MambaManager.config(
-                mamba_cache_mode="align", num_speculative_blocks=num_spec_blocks
+                enable_prefix_caching=True, num_speculative_blocks=num_spec_blocks
             ),
         ),
     ]

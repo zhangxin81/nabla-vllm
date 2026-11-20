@@ -101,6 +101,7 @@ def test_ple_metadata_preserves_request_and_token_order(
         pytest.skip("CUDA required")
     device = torch.device(device)
     config = VllmConfig()
+    config.cache_config.enable_prefix_caching = False
     config.speculative_config = SpeculativeConfig(
         method="ngram", num_speculative_tokens=3
     )
@@ -2613,8 +2614,10 @@ def test_ple_state_shares_a_gdn_group(compressed_key_size):
             specs[f"model.layers.{i}.attn"] = full_layer(attn)
             specs[f"model.layers.{i}.indexer"] = full_layer(compressed_key)
         else:
-            specs[f"model.layers.{i}.gdn"] = mamba_layer(gdn, mamba_cache_mode="align")
-    specs["model.layers.1.ple"] = mamba_layer(ple, mamba_cache_mode="align")
+            specs[f"model.layers.{i}.gdn"] = mamba_layer(
+                gdn, enable_prefix_caching=True
+            )
+    specs["model.layers.1.ple"] = mamba_layer(ple, enable_prefix_caching=True)
     vllm_config = VllmConfig()
     vllm_config.cache_config.kv_cache_layout = "BLHNC"
     vllm_config.scheduler_config.disable_hybrid_kv_cache_manager = False
