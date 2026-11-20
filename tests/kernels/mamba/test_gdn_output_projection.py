@@ -68,7 +68,7 @@ def test_fused_gated_rms_norm_strided_z_bitwise(
     """The Qwen3.5 fused gated RMS norm reads z from its packed strided view
     of the qkvz projection and matches `rmsnorm_fn` on the copied/reshaped
     z bitwise."""
-    from vllm.models.qwen3_5.common.fused_gdn_gated_norm import (
+    from vllm.model_executor.layers.mamba.gdn.fused_gated_norm import (
         fused_gdn_gated_rms_norm,
     )
     from vllm.third_party.flash_linear_attention.ops.layernorm_guard import (
@@ -138,7 +138,7 @@ def test_fused_gated_rms_norm_fp8_matches_chain(
     """The FP8 output (fused out_proj input quant) equals the bf16 kernel
     followed by static scaled_fp8_quant."""
     from vllm import _custom_ops as ops
-    from vllm.models.qwen3_5.common.fused_gdn_gated_norm import (
+    from vllm.model_executor.layers.mamba.gdn.fused_gated_norm import (
         fused_gdn_gated_rms_norm,
     )
 

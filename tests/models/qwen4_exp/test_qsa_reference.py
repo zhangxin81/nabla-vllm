@@ -954,6 +954,58 @@ def test_qsa_decode_selection_correctness(
     torch.testing.assert_close(actual.sort().values, expected.sort().values)
 
 
+def test_qsa_deepgemm_prefill_plan_bounds_keys_and_logits() -> None:
+    from vllm.models.qwen4_exp.nvidia.ops.qsa_prefill_deepgemm import (
+        plan_prefill_chunks,
+    )
+
+    assert plan_prefill_chunks([10, 10, 10], [400, 400, 400], 1600 * 128) == [
+        (0, 2, 0, 20),
+        (2, 3, 0, 10),
+    ]
+    assert plan_prefill_chunks([130], [1000], 1000 * 128 + 128 * 1280 * 4) == [
+        (0, 1, 0, 96),
+        (0, 1, 96, 130),
+    ]
+    assert plan_prefill_chunks([40], [1000], 0) == [(0, 1, 0, 32), (0, 1, 32, 40)]
+    assert plan_prefill_chunks([3, 0], [1280, 0], 0) == [(0, 1, 0, 3)]
+
+
+@requires_qsa_kernels
+@pytest.mark.parametrize("page_size", [24, 64])
+def test_qsa_prefill_gather_respects_group_offset_and_short_page(page_size) -> None:
+    from vllm.models.qwen4_exp.nvidia.ops.qsa_prefill_deepgemm import (
+        QSADeepGEMMPrefillPlan,
+        QSAPrefillChunk,
+        gather_prefill_keys,
+    )
+
+    torch.manual_seed(41)
+    cache = torch.randint(0, 16, (6, page_size, 1, 128), device="cuda").to(
+        torch.float8_e4m3fn
+    )
+    table = torch.tensor([[0, 1, 2], [5, 3, 4]], device="cuda", dtype=torch.int32)
+    length = page_size + 3
+    cu_keys = torch.tensor([0, 7, 7 + length], device="cuda", dtype=torch.int32)
+    chunk = QSAPrefillChunk(
+        row_start=1,
+        row_end=2,
+        req_start=1,
+        req_end=2,
+        num_keys=length,
+        width=((length + 63) // 64) * 64,
+        gather=True,
+        ks=torch.tensor([0], device="cuda", dtype=torch.int32),
+        ke=torch.tensor([length], device="cuda", dtype=torch.int32),
+        schedule=torch.empty(0, device="cuda", dtype=torch.int32),
+    )
+    actual = gather_prefill_keys(
+        cache, table, QSADeepGEMMPrefillPlan(cu_keys, [chunk]), chunk
+    )
+    expected = torch.cat((cache[5, :, 0], cache[3, :3, 0]))
+    torch.testing.assert_close(actual.float(), expected.float(), rtol=0, atol=0)
+
+
 @requires_qsa_kernels
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float8_e4m3fn])
 @pytest.mark.parametrize("seq_len_slack", [0, 1792])
@@ -1018,6 +1070,59 @@ def test_qsa_prefill_selection_correctness(
         sequence_lengths.index_select(0, token_to_req.long()) // compress_ratio,
     )
 
+    from vllm.models.qwen4_exp.nvidia.ops import qsa_prefill_deepgemm
+    from vllm.models.qwen4_exp.nvidia.ops.qsa_prefill_deepgemm import (
+        can_use_deepgemm_prefill,
+        prepare_deepgemm_prefill,
+        reserve_deepgemm_prefill,
+    )
+
+    if dtype == torch.float8_e4m3fn and current_platform.is_device_capability_family(
+        100
+    ):
+        # Fail rather than silently test the Triton fallback on SM100.
+        assert can_use_deepgemm_prefill(q, cache)
+    deepgemm_prefill = None
+    if can_use_deepgemm_prefill(q, cache):
+        # The constants are reserved once per process; size them per case.
+        monkeypatch.setattr(qsa_prefill_deepgemm, "_constants", None)
+        reserve_deepgemm_prefill(
+            q.device, max(sequence_lens) + seq_len_slack, compress_ratio, rows
+        )
+        metadata = qsa_common.QSAIndexerMetadata(
+            block_table=page_table,
+            slot_mapping=torch.full((rows,), -1, device="cuda", dtype=torch.int64),
+            seq_lens=sequence_lengths,
+            query_start_loc=query_start_loc,
+            token_to_req=token_to_req,
+            logical_positions=query_positions,
+            visible_blocks=visible_blocks,
+            k_work_metadata=torch.empty((0, 2), device="cuda", dtype=torch.int32),
+            num_actual_tokens=rows,
+            num_decodes=0,
+            num_decode_tokens=0,
+            num_prefills=len(query_lens),
+            num_prefill_tokens=rows,
+            max_query_len=max(query_lens),
+            decode_query_len=0,
+            max_seq_len=sequence_lengths.max().item() + seq_len_slack,
+            storage_block_size=cache.shape[1],
+            compress_ratio=compress_ratio,
+        )
+        # seq_len_slack makes the host lengths an over-estimate, as under
+        # async spec decode.
+        deepgemm_prefill = prepare_deepgemm_prefill(
+            metadata, query_start_loc.cpu(), sequence_lengths.cpu() + seq_len_slack
+        )
+        if force_chunk and query_lens == [3, 33]:
+            # With no budget, each request is its own group, so the second
+            # one's keys are packed from a nonzero offset; the 33-row request
+            # splits at one Q tile and reuses its gathered keys.
+            assert [
+                (c.req_start, c.row_start, c.row_end, c.gather)
+                for c in deepgemm_prefill.chunks
+            ] == [(0, 0, 3, True), (1, 3, 35, True), (1, 35, 36, False)]
+
     actual = torch.empty(
         (rows, token_topk // compress_ratio), device="cuda", dtype=torch.int32
     )
@@ -1033,6 +1138,7 @@ def test_qsa_prefill_selection_correctness(
         max(query_lens),
         actual,
         max_seq_len=sequence_lengths.max().item() + seq_len_slack,
+        deepgemm_prefill=deepgemm_prefill,
     )
     expected = _qsa_select_paged_reference(
         q,

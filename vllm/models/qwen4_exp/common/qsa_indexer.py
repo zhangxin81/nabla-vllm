@@ -14,7 +14,7 @@ shared by the generic cache-layout planner.
 import math
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 from torch import nn
@@ -47,6 +47,9 @@ from vllm.v1.kv_cache_interface import (
     MLAAttentionSpec,
     SparseCacheRole,
 )
+
+if TYPE_CHECKING:
+    from ..nvidia.ops.qsa_prefill_deepgemm import QSADeepGEMMPrefillPlan
 
 
 def canonical_qsa_rope_positions(positions: torch.Tensor) -> torch.Tensor:
@@ -604,12 +607,14 @@ class QSAIndexerMetadata(AttentionMetadata):
     # Key rows per physical cache block.
     storage_block_size: int
     compress_ratio: int
+    deepgemm_prefill: "QSADeepGEMMPrefillPlan | None" = None
 
 
 class QSAIndexerMetadataBuilder(AttentionMetadataBuilder[QSAIndexerMetadata]):
     """Build QSA metadata from vLLM's cache-group-specific common metadata."""
 
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.UNIFORM_BATCH
+    use_deepgemm_prefill = False
 
     def __init__(
         self,
@@ -632,6 +637,16 @@ class QSAIndexerMetadataBuilder(AttentionMetadataBuilder[QSAIndexerMetadata]):
         else:
             self.compress_ratio = 1
         self.storage_block_size = kv_cache_spec.num_states
+        from ..nvidia.ops.qsa_prefill_deepgemm import deepgemm_prefill_supported
+
+        self.use_deepgemm_prefill = (
+            not self.is_circular_buffer
+            and deepgemm_prefill_supported(
+                kv_cache_spec.dtype,
+                vllm_config.model_config.hf_text_config.indexer_n_heads,
+                kv_cache_spec.head_size,
+            )
+        )
         max_tokens = vllm_config.scheduler_config.max_num_batched_tokens
         self.token_to_req_buffer = torch.empty(
             max_tokens, dtype=torch.int32, device=device
@@ -713,7 +728,7 @@ class QSAIndexerMetadataBuilder(AttentionMetadataBuilder[QSAIndexerMetadata]):
                 request_capacity=request_capacity,
             )
         )
-        return QSAIndexerMetadata(
+        metadata = QSAIndexerMetadata(
             block_table=common_attn_metadata.block_table_tensor,
             slot_mapping=slot_mapping,
             seq_lens=common_attn_metadata.seq_lens,
@@ -733,6 +748,16 @@ class QSAIndexerMetadataBuilder(AttentionMetadataBuilder[QSAIndexerMetadata]):
             storage_block_size=self.storage_block_size,
             compress_ratio=self.compress_ratio,
         )
+        if self.use_deepgemm_prefill and num_prefill_tokens:
+            from ..nvidia.ops.qsa_prefill_deepgemm import prepare_deepgemm_prefill
+
+            assert common_attn_metadata.seq_lens_cpu_upper_bound is not None
+            metadata.deepgemm_prefill = prepare_deepgemm_prefill(
+                metadata,
+                common_attn_metadata.query_start_loc_cpu,
+                common_attn_metadata.seq_lens_cpu_upper_bound,
+            )
+        return metadata
 
 
 class QSAIndexerBackend(AttentionBackend):

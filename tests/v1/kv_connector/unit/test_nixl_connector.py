@@ -302,6 +302,78 @@ def test_first_stream_ordered_registration_loads_before_forward(
         scheduler.shutdown()
 
 
+@pytest.mark.parametrize(
+    "remote_sizes, error",
+    [
+        ([64, 64], None),
+        ([64, 128], NotImplementedError),
+        ([64], ValueError),
+        ([0, 64], ValueError),
+    ],
+)
+def test_handshake_checks_every_transfer_groups_token_scale(
+    remote_sizes, error, monkeypatch, dist_init
+):
+    """Equal engine LCMs cannot hide a misaligned group's transferred tokens."""
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_worker
+
+    monkeypatch.setattr(base_worker, "NixlWrapper", FakeNixlWrapper)
+    config = create_vllm_config(
+        block_size=64,
+        max_model_len=128,
+        kv_role="kv_both",
+        hf_overrides={"head_dim": 64, "hidden_size": 128},
+    )
+    config.cache_config.kv_cache_layout = "BLNHC"
+    specs = {
+        name: AttentionSpec(
+            block_size=64, num_kv_heads=1, head_size=head, dtype=torch.float16
+        )
+        for name, head in (("attention", 64), ("indexer", 32))
+    }
+    cache_config = KVCacheConfig(
+        8, [], [make_kv_cache_group([name], spec) for name, spec in specs.items()]
+    )
+    workers = []
+    try:
+        with set_current_vllm_config(config):
+            for engine in ("producer", "decoder"):
+                worker = NixlConnectorWorker(config, engine, cache_config)
+                workers.append(worker)
+                worker.register_kv_caches(
+                    {
+                        name: dense_kv_cache_views(
+                            torch.zeros(
+                                8 * spec.page_size_bytes,
+                                dtype=torch.uint8,
+                                device="cuda",
+                            ),
+                            spec,
+                            8,
+                            1,
+                            KVCacheLayout.BLNHC,
+                        )[0]
+                        for name, spec in specs.items()
+                    }
+                )
+            producer, decoder = workers
+            packet = producer.xfer_handshake_metadata
+            assert packet is not None
+            metadata = msgspec.msgpack.decode(
+                packet.agent_metadata_bytes, type=NixlAgentMetadata
+            )
+            assert metadata.transfer_block_sizes == [64, 64]
+            metadata = dataclasses.replace(metadata, transfer_block_sizes=remote_sizes)
+            if error is None:
+                assert decoder.add_remote_agent(metadata)
+            else:
+                with pytest.raises(error, match="block sizes"):
+                    decoder.add_remote_agent(metadata)
+    finally:
+        for worker in reversed(workers):
+            worker.shutdown()
+
+
 def get_default_xfer_telemetry(
     xferDurationS: float = 1,
     postDurationS: float = 1,

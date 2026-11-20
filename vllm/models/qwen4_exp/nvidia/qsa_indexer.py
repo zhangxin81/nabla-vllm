@@ -454,6 +454,7 @@ class QSAIndexer(nn.Module):
                 block_indices[prefill_slice],
                 compressed_metadata.max_seq_len,
                 self.topk_backend,
+                deepgemm_prefill=compressed_metadata.deepgemm_prefill,
             )
         expand_qsa_block_indices(
             block_indices,

@@ -1744,6 +1744,8 @@ class DefaultKVCacheConfigBuilder(KVCacheConfigBuilder):
         if not vllm_config.model_config.supports_kv_cache_grouping:
             return get_kv_cache_groups(vllm_config, layer_configs)
         if vllm_config.attention_config.hisparse_config is not None:
+            if vllm_config.model_config.hf_config.model_type == "qwen4_exp":
+                return get_kv_cache_groups(vllm_config, layer_configs)
             raise ValueError(
                 "A model-declared get_kv_cache_groups cannot be combined "
                 "with HiSparse, which owns its own KV cache grouping. "

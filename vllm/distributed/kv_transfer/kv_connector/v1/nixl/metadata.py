@@ -95,6 +95,8 @@ class NixlAgentMetadata:
     # Packed member -> (byte offset in its region's block, bytes per page).
     packed_member_layouts: dict[str, tuple[int, int]] = field(default_factory=dict)
     local_ipc: LocalIpcMetadata | None = None
+    # Logical block size of each non-Mamba, non-ring transfer group, in order.
+    transfer_block_sizes: list[int] = field(default_factory=list)
 
 
 @dataclass

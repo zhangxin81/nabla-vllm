@@ -18,6 +18,9 @@ from vllm.distributed import get_pp_group, tensor_model_parallel_all_reduce
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.fusion.mm_input_norm import build_mm_input_norm
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.layers.mamba.gdn.fused_gated_norm import (
+    fused_gdn_gated_rms_norm_quant,
+)
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
     QwenGatedDeltaNetAttention,
 )
@@ -242,6 +245,14 @@ class Qwen4ExpDecoderLayer(nn.Module):
                 prefix=f"{prefix}.linear_attn",
                 gqa_interleaved_layout=False,
                 reduce_results=not self.use_hc_sequence_parallel,
+                overlap_ba_proj=(
+                    vllm_config.compilation_config.mode == CompilationMode.NONE
+                ),
+                fused_gdn_gated_rms_norm=(
+                    fused_gdn_gated_rms_norm_quant
+                    if vllm_config.compilation_config.mode == CompilationMode.NONE
+                    else None
+                ),
             )
         elif layer_type in _QSA_LAYER_TYPES:
             use_qsa = getattr(config, "indexer_n_heads", None) is not None
@@ -790,7 +801,7 @@ class Qwen4ExpKVCacheGrouping(SupportsKVCacheGrouping):
             == "qwen4_exp"
         ):
             # GDN layers advance together, so one slot contains their states.
-            combined = {}
+            combined: dict[object, KVCacheGroup] = {}
             for group in groups:
                 if not all(
                     isinstance(spec, MambaSpec)

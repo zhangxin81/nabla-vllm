@@ -21,6 +21,12 @@ local IDs and free lists. The index's internal IDs are never sent to GPU
 block tables or connectors. Thus token page 1 and state slot 1 can be
 indexed together without naming the same resource.
 
+On NVIDIA SM90 and newer, the retained packed GDN decode, attention sigmoid
+gate, gated norm and Triton MoE kernels use programmatic dependent launch (PDL). Each
+kernel waits for its producer before reading inputs, and releases dependent
+grids at normal grid completion. This changes launch scheduling without
+changing the arithmetic or introducing a new user setting.
+
 Lookups continue to use the chained prefix hash and cache group ID, including
 existing salt, multimodal and lookahead inputs. Duplicate prefix entries
 retain their physical owners. Resetting one pool removes only its entries;
