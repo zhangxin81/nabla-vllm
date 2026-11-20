@@ -4,6 +4,7 @@
 
 import copy
 import gc
+import random
 import weakref
 from collections.abc import Callable
 from dataclasses import replace
@@ -7073,3 +7074,52 @@ def test_native_gdn_import_reserves_both_loaded_and_writable_state(
     assert allocated is not None
     manager.free(request)
     assert manager.usage == 0
+
+
+def test_native_pool_references_and_evictions_preserve_exact_byte_ownership():
+    """Interleaved page/state leases must never alias live or cached bytes."""
+    arena, pools = _native_resource_pools()
+    rng = random.Random(42)
+    leases: list[tuple[BlockPool, KVCacheBlock]] = []
+    rejected = 0
+    for step in range(1000):
+        if leases and rng.random() < 0.45:
+            pool, block = leases.pop(rng.randrange(len(leases)))
+            pool.free_blocks([block])
+        elif leases and rng.random() < 0.2:
+            pool, block = rng.choice(leases)
+            pool.touch([block])
+            leases.append((pool, block))
+        else:
+            pool = rng.choice(pools)
+            before = arena.memory.free_bytes
+            if not arena.can_allocate([(pool, 1)]):
+                rejected += 1
+                assert arena.memory.free_bytes == before
+            else:
+                block = pool.get_new_blocks(1)[0]
+                key = make_block_hash_with_group_id(
+                    BlockHash(str(step).encode()), pools.index(pool)
+                )
+                block.set_block_hash(key)
+                pool.cached_block_hash_to_block.insert(key, block)
+                leases.append((pool, block))
+
+        occupied: set[int] = set()
+        for pool, block in {id(b): (p, b) for p, b in leases}.values():
+            start = block.block_id * pool.block_stride_bytes
+            interval = set(range(start, start + pool.block_stride_bytes))
+            assert not occupied.intersection(interval)
+            occupied.update(interval)
+        assert arena.memory.free_bytes == 144 - len(occupied)
+        for pool in pools:
+            for block in pool.blocks:
+                if not block.ref_cnt and block.block_hash is not None:
+                    start = block.block_id * pool.block_stride_bytes
+                    assert not occupied.intersection(
+                        range(start, start + pool.block_stride_bytes)
+                    )
+    assert rejected > 0
+    for pool, block in leases:
+        pool.free_blocks([block])
+    assert arena.memory.ranges == [(48, 192)]

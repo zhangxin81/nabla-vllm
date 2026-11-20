@@ -10,6 +10,7 @@ import torch
 import vllm.third_party.flash_linear_attention.ops.fused_gdn_decode_post_conv_mtp as mtp_ops  # noqa: E501
 from vllm.model_executor.warmup.qwen_triton_warmup import (
     _FLA_POST_CONV_WARMUP_LENGTHS,
+    _qwen_gdn_warmup_config,
     _QwenGDNWarmupConfig,
     _warm_causal_conv1d_fwd_kernel,
     _warm_fused_gdn_decode_post_conv_mtp_kernel,
@@ -61,6 +62,67 @@ def test_qwen_gdn_prefill_warmup_kernels_compile_on_gpu() -> None:
     _warm_state_gather_scatter_kernels(device, config)
     assert _FLA_POST_CONV_WARMUP_LENGTHS == (1, 2, 16)
     torch.accelerator.synchronize(device)
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="CUDA cache is required")
+def test_gdn_warmup_copies_offloaded_parameters_to_the_cache_device(
+    tmp_path, dist_init
+):
+    """Warmup must use device parameters when the real layer owns CPU weights."""
+    from transformers import Qwen4ExpConfig
+
+    from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
+    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+        QwenGatedDeltaNetAttention,
+    )
+    from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+
+    hf_config = Qwen4ExpConfig(
+        architectures=["Qwen4ExpForConditionalGeneration"],
+        text_config={
+            "hidden_size": 32,
+            "vocab_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 16,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 2,
+            "linear_key_head_dim": 16,
+            "linear_value_head_dim": 16,
+            "linear_conv_kernel_dim": 4,
+            "output_gate_type": "sigmoid",
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "ple_layer_ids": [],
+        },
+    )
+    hf_config.save_pretrained(tmp_path)
+    config = VllmConfig(
+        model_config=ModelConfig(model=str(tmp_path), skip_tokenizer_init=True),
+        additional_config={"gdn_prefill_backend": "triton"},
+    )
+    with set_current_vllm_config(config):
+        layer = QwenGatedDeltaNetAttention(
+            hf_config.text_config, config, prefix="model.layers.0.linear_attn"
+        )
+        with torch.no_grad():
+            layer.A_log.fill_(-0.5)
+            layer.dt_bias.fill_(0.25)
+        conv = torch.zeros((2, 96, 3), dtype=torch.bfloat16, device="cuda")
+        if not is_conv_state_dim_first():
+            conv = conv.transpose(-1, -2).contiguous()
+        state = torch.zeros((2, 2, 16, 16), dtype=torch.float32, device="cuda")
+        layer.kv_cache = (conv, state)
+        assert layer.A_log.device.type == layer.dt_bias.device.type == "cpu"
+        warmup = _qwen_gdn_warmup_config(
+            config.compilation_config.static_forward_context
+        )
+    assert warmup is not None
+    assert warmup.a_log.device == warmup.dt_bias.device == conv.device
+    torch.testing.assert_close(warmup.a_log.cpu(), layer.A_log, rtol=0, atol=0)
+    torch.testing.assert_close(warmup.dt_bias.cpu(), layer.dt_bias, rtol=0, atol=0)
 
 
 @pytest.mark.skipif(not current_platform.is_rocm(), reason="ROCm-only Triton kernel")

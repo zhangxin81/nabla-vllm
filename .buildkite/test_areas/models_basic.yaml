@@ -448,6 +448,7 @@ steps:
   - vllm/models/qwen4_exp/nvidia/ops/qsa_prefill_deepgemm.py
   - vllm/models/qwen4_exp/common/qsa_indexer.py
   - vllm/model_executor/layers/mamba/gdn/fused_gated_norm.py
+  - vllm/model_executor/warmup/qwen_triton_warmup.py
   - vllm/utils/deep_gemm.py
   - tests/models/qwen4_exp/test_hc_ops.py
   - tests/models/qwen4_exp/test_mega_moe.py
@@ -457,6 +458,7 @@ steps:
     - pytest -v -s models/qwen4_exp/test_mega_moe.py
     - pytest -v -s models/qwen4_exp/test_qsa_reference.py
     - pytest -v -s kernels/mamba/test_gdn_output_projection.py
+    - pytest -v -s model_executor/test_qwen_triton_warmup.py
   mirror:
     amd:
       label: ":amd: (MI355) Qwen4 Exp HC Kernels"

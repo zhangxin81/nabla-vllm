@@ -21,6 +21,7 @@ unrelated history. It does not merge or modify the upstream PRs.
 | [#67740](https://github.com/vllm-project/vllm/pull/67740) | `819fbdf5645e1c4f139bf81b741548bc31c22779` | SM100 QSA FP8 prefill with contiguous DeepGEMM logits, native compressed key addressing and bounded scratch planning. The shared metadata builder installs the plan. |
 | [#68856](https://github.com/vllm-project/vllm/pull/68856) | `4c1896978a9173f4a9918eedf2ca7be345c7bc0c` | Preserve the existing SM90 router tuning and add an H100 CI job for its correctness suite. |
 | [#64846](https://github.com/vllm-project/vllm/pull/64846) | `c17f9ce00a52fa7b5ce89ff25b02e6bb30722b51` | PDL launches for packed GDN decode, sigmoid gate, gated norm and Triton MoE. Each waits before its first read; no early dependent trigger. Gated norm is moved into the shared GDN package and connected to Qwen4Exp outside compilation. |
+| [#64670](https://github.com/vllm-project/vllm/pull/64670) | `31c4f772dd375f4fd271b473688ce31f8e425adc` | Copy offloaded GDN warmup parameters to the cache device. Test a real Qwen GDN layer and retain the original CPU parameters. |
 
 The GDN overlap implementation from #64425 is retained. Qwen3.5's NVIDIA caller
 enables it outside `torch.compile`; the layer restricts overlap to compatible
@@ -112,6 +113,11 @@ VLLM_TARGET_DEVICE=empty HF_HUB_OFFLINE=1 .venv/bin/python -m pytest \
 Result: **12 passed, 238 deselected in 12.91s**. Both the loaded GDN state and
 the first writable decode state participate in one admission plan.
 
+The added interleaving stress test performs 1,000 page/state allocation,
+reference and release operations, independently checking live byte ownership
+and overlapping cached-entry eviction. With the admission regressions:
+**13 passed, 238 deselected in 10.51s**.
+
 After the PDL addition and shared gated-norm migration, the existing packed
 decode, gated-norm and sigmoid-gate suites plus native byte-copy/zeroing tests
 passed on H100: **63 passed, 83 deselected in 32.03s**. The 83 deselections are
@@ -119,6 +125,16 @@ the unrelated attention utilities in the same worker file; no failing case was
 removed or skipped. The first run exposed 17 imports of the deleted Qwen3.5
 norm module. Their imports now exercise the shared GDN implementation, retaining
 the original exact and FP8 assertions.
+
+The full Triton MoE suite passed on H100: **991 passed, 331 skipped, 3 warnings
+in 397.54s (0:06:37)**. Skipped cases retain their existing platform and
+configuration requirements; these are not validation of the skipped hardware.
+
+The GDN offload warmup regression constructs a real Qwen GDN layer, binds a
+CUDA cache and checks that CPU parameters reach warmup on that device without
+changing their values. On the pre-fix source it failed at the device assertion:
+**1 failed, 3 deselected in 7.47s**. With #64670 the warmup file passed:
+**2 passed, 2 skipped in 9.17s**; the two skipped cases require ROCm.
 
 The stage17 Qwen H100 4P4D IPC diagnostic cancelled 12 requests, drained the
 queues, served three follow-up requests and reset the prefix caches. The
@@ -150,7 +166,6 @@ proposal out of this integration does not assert that it has no benefit.
 | PRs | Current disposition |
 | --- | --- |
 | #68636 | The change targets the older DeepSeek V4 attention specs. V4.1 already constrains SWA stride by the interleaved record sizes and indexer stride by its 256-byte requirement; do not substitute the older 576-byte constant. |
-| #64670 | GDN parameter offload warmup fix identified; separate regression validation is needed before integration. |
 | #67593 and #67203 | Chunked WRITE uses `NixlPushConnector`, including a stacked protocol and scheduler change. The requested baseline uses `NixlConnector` pull; this needs a separate transfer validation and performance arm. |
 | #46251 and #64611 | Alternative cache allocation designs; the independent native-stride arena already changes their ownership and worker assumptions. Importing them together would install competing allocation designs. |
 | #58863, #67590, #64870, #64884, #65061, #65064, #65069 | RecoverSSM and batch-invariance stacks require a complete compatible dependency chain and model validation. They are not enabled by the greedy serving baseline. |
