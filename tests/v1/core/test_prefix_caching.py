@@ -6918,6 +6918,10 @@ def test_state_slots_and_token_pages_borrow_the_same_byte_budget():
     states.free_blocks([state])
     assert arena.memory.free_bytes == 144
     assert arena.memory.ranges == [(48, 192)]
+    with pytest.raises(ValueError, match="Cannot get 10 free blocks"):
+        tokens.get_new_blocks(10)
+    assert arena.memory.free_bytes == 144
+    assert arena.memory.ranges == [(48, 192)]
     assert len(tokens.get_new_blocks(9)) == 9
 
 

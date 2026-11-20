@@ -714,15 +714,14 @@ class BlockPool:
             A list of new block.
 
         """
-        if num_blocks > self.get_num_free_blocks():
-            raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
-
         if self.memory_arena is None:
+            if num_blocks > self.get_num_free_blocks():
+                raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
             ret = self.free_block_queue.popleft_n(num_blocks)
         else:
             selected = self.memory_arena.planned_blocks(self, num_blocks)
             if selected is None:
-                raise ValueError("Cache arena cannot fit the requested slots")
+                raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
             ret = selected
             for block in ret:
                 self.memory_arena.acquire(block, self.block_stride_bytes)
