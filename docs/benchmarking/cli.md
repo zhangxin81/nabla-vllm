@@ -46,6 +46,14 @@ the runner's CUDA graph manager disabled. It does not add serving capture-bucket
 padding; model-level padding, such as sequence-parallel alignment, can still
 occur. Use native serving graphs when evaluating capture-bucket padding costs.
 
+For native hybrid caches, the benchmark reserves each request's KV pages and
+recurrent state slots through the shared byte arena. Each group keeps its own
+physical stride and capacity. Initialization touches only owned blocks, and
+graph replay restores the actual written tail IDs, including noncontiguous
+runs and recurrent scratch slots. Cases that exceed the aligned byte budget
+fail before model execution. The synthetic batch bypasses prefix lookup and
+checkpoint selection; use serving benchmarks to measure those policies.
+
 ## Attention Kernel Benchmark
 
 Run the attention kernel smoke benchmark from the repository root using the

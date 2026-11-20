@@ -3,7 +3,7 @@
 """KV blocks of a benchmark case: initialization and the blocks a step writes.
 
 Only the case's blocks are touched, group by group: groups can alias one
-allocation with different layouts, and the batch builder keeps their block IDs
+allocation with different layouts, and the batch builder keeps their bytes
 disjoint. Zero KV times within a few percent of random KV, even for sparse
 attention (DeepSeek-V4.1, ~100K context), so zeros are the only init for now.
 """
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from vllm.benchmarks.forward.batch import BenchBatch, kv_block_size
+from vllm.benchmarks.forward.batch import BenchBatch, block_ranges, kv_block_size
 from vllm.v1.kv_cache_interface import MambaSpec
 
 if TYPE_CHECKING:
@@ -56,9 +56,13 @@ def zero_kv_blocks(
     num_blocks: int,
 ) -> None:
     for group in attn_groups:
-        ranges = batch.group_block_ranges[group.kv_cache_group_id]
-        for tensor in _group_tensors(kv_caches, group, num_blocks):
-            dim, factor = _block_dim(tensor, num_blocks)
+        group_id = group.kv_cache_group_id
+        ranges = batch.group_block_ranges[group_id]
+        capacity = (
+            batch.group_capacities[group_id] if batch.group_capacities else num_blocks
+        )
+        for tensor in _group_tensors(kv_caches, group, capacity):
+            dim, factor = _block_dim(tensor, capacity)
             for begin, end in ranges:
                 tensor.narrow(dim, begin * factor, (end - begin) * factor).zero_()
 
@@ -72,20 +76,22 @@ def touched_kv_views(
     lookahead: int = 0,
 ) -> list[torch.Tensor]:
     """Views a step may write: attention tails and all recurrent state slots."""
-    scheduled_tokens = [
-        batch.expected[req_id][0] + lookahead for req_id in batch.req_ids
-    ]
     views = []
     for group in attn_groups:
-        ranges = batch.group_block_ranges[group.kv_cache_group_id]
+        group_id = group.kv_cache_group_id
+        capacity = (
+            batch.group_capacities[group_id] if batch.group_capacities else num_blocks
+        )
         block_size = kv_block_size(group.kv_cache_spec, dcp_size)
-        for tensor in _group_tensors(kv_caches, group, num_blocks):
-            dim, factor = _block_dim(tensor, num_blocks)
-            for (begin, end), tokens in zip(ranges, scheduled_tokens):
-                first = (
-                    begin
-                    if isinstance(group.kv_cache_spec, MambaSpec)
-                    else max(begin, end - (-(-tokens // block_size) + 2))
-                )
-                views.append(tensor.narrow(dim, first * factor, (end - first) * factor))
+        for tensor in _group_tensors(kv_caches, group, capacity):
+            dim, factor = _block_dim(tensor, capacity)
+            for req in batch.scheduler_output.scheduled_new_reqs:
+                ids = [block_id for block_id in req.block_ids[group_id] if block_id]
+                if not isinstance(group.kv_cache_spec, MambaSpec):
+                    tokens = batch.expected[req.req_id][0] + lookahead
+                    ids = ids[-(-(-tokens // block_size) + 2) :]
+                for begin, end in block_ranges(ids):
+                    views.append(
+                        tensor.narrow(dim, begin * factor, (end - begin) * factor)
+                    )
     return views
