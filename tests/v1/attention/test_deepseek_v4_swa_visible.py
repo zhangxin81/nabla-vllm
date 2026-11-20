@@ -538,15 +538,17 @@ def make_builder(
     max_image_tokens: int = MAX_IMG,
     max_num_batched_tokens: int = 64,
     max_num_seqs: int = 8,
-    model_name: str = "Qwen/Qwen3-0.6B",
+    model_name: str | None = None,
     builder_cls: type[
         DeepseekSparseSWAMetadataBuilder
     ] = DeepseekSparseSWAMetadataBuilder,
     deepseek_v4_config: bool = True,
 ) -> DeepseekSparseSWAMetadataBuilder:
+    from tests.v1.kv_connector.unit.utils import scheduler_test_model
+
     vision_fields = dict(vision_n_layers=2, vision_max_n_token=max_image_tokens)
     vllm_config = create_vllm_config(
-        model_name=model_name,
+        model_name=model_name or scheduler_test_model().name,
         max_model_len=4096,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,

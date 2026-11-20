@@ -268,10 +268,25 @@ other hardware, different quantization contracts, different connectors or
 parallel layouts, and incomplete speculative/batch-invariance stacks are not
 implicitly enabled. In particular, #65297/#66126 tune per-token/per-channel
 scaled GEMMs; the two tested Qwen checkpoints use dynamic 128x128 block FP8.
-#61121 requires common whole-row strides; the native arena's distinct group
+# 61121 requires common whole-row strides; the native arena's distinct group
 strides must keep independent regions. #62343 applies to short Triton/FLA
 prefills, while the measured Qwen setup selects FlashInfer prefill. #64161's
 large shared-block heuristic is bypassed by native page/state sizing.
-#64893/#64364 depend on DSpark and specialized decode, and #66236 shreds rows
+# 64893/#64364 depend on DSpark and specialized decode, and #66236 partitions rows
 in pure TP rather than the measured TP4/EP4 layout. Their original measurements
 do not establish a gain for this combination.
+
+The SWA metadata migration additionally adapts
+[#64253](https://github.com/vllm-project/vllm/pull/64253): same-spec causal
+text decode groups build one leader and populate the sibling groups in one
+Triton launch. Each sibling keeps its own physical table, slot mapping and
+per-layer attention plan. DSpark/non-causal and image-window configurations
+keep their existing builder path. The new H100 checks cover 3/128 requests,
+contiguous/padded table strides, invalid rows, replay starts and CUDA graph
+replay after inputs change: **4 passed, 36 deselected in 22.48s**. The H100
+and B200 attention steps include the model-state source dependency.
+
+The arena also removes the permanently reserved null byte region from each
+native pool's free queue, avoiding repeated scans of unallocatable virtual IDs.
+The native admission/reference/eviction regressions passed after this change:
+**13 passed, 238 deselected in 11.94s**.
