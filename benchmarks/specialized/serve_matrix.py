@@ -3,8 +3,8 @@
 """Run reproducible serving shapes against an already started 4P4D proxy."""
 
 import argparse
+import asyncio
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,7 +21,7 @@ CAPACITY_LENGTHS = ((65536, 128), (32768, 1024))
 CONCURRENCIES = (1, 8, 32, 64, 128)
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
@@ -42,6 +42,11 @@ def main() -> None:
         if saved_manifest.exists() and saved_manifest.read_bytes() != manifest_bytes:
             raise ValueError("Result directory belongs to a different experiment")
         saved_manifest.write_bytes(manifest_bytes)
+        from vllm.benchmarks.serve import add_cli_args, main_async
+        from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+        benchmark_parser = FlexibleArgumentParser()
+        add_cli_args(benchmark_parser)
 
     for input_len, output_len in (*MAIN_LENGTHS, *CAPACITY_LENGTHS):
         concurrencies = CONCURRENCIES
@@ -128,7 +133,8 @@ def main() -> None:
                 print(json.dumps(command))
                 continue
             print(f"CASE_START {args.model} {args.arm} {name}", flush=True)
-            subprocess.run(command, check=True, timeout=1800)
+            benchmark_args = benchmark_parser.parse_args(command[5:])
+            await asyncio.wait_for(main_async(benchmark_args), timeout=1800)
             result = json.loads(output.read_text())
             if result["completed"] != samples or result.get("failed"):
                 raise RuntimeError(f"Incomplete requests in {output}")
@@ -139,4 +145,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
