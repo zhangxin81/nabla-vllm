@@ -2,7 +2,7 @@
 
 This fork targets Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA CUDA
 GPUs, including H20, H100 and B200. The current upstream baseline is
-`f8ff2135e5c9a1121e05c91820cfbdbe3d467427`. The initial specialization used
+`5a21c6c853bff525dbaa4cc06596e3c374599f85`. The initial specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`.
 
 Imported upstream contributions and their validation scope are recorded in the

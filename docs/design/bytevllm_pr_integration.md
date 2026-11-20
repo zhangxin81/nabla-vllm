@@ -1,7 +1,7 @@
 # bytevllm downstream PR integration
 
 The current integration uses upstream baseline
-`f8ff2135e5c9a1121e05c91820cfbdbe3d467427`. The original specialization used
+`5a21c6c853bff525dbaa4cc06596e3c374599f85`. The original specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`. Source PRs are pinned
 below so later upstream updates can be compared without importing an old branch's
 unrelated history. It does not merge or modify the upstream PRs.
