@@ -21,6 +21,9 @@ For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 ## About
 
+This branch starts a CUDA-only specialization for Qwen3.8-Flash-Next and
+DeepSeek-V4.1-Flash. See the [cache design and migration status](docs/design/specialized_hybrid_cache.md).
+
 vLLM is a fast and easy-to-use library for LLM inference and serving.
 
 Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
@@ -30,7 +33,7 @@ vLLM is fast with:
 - State-of-the-art serving throughput
 - Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
 - Continuous batching of incoming requests, chunked prefill, prefix caching
-- Fast and flexible model execution with piecewise and full CUDA/HIP graphs
+- Fast and flexible model execution with piecewise and full CUDA graphs
 - Quantization: FP8, MXFP8/MXFP4, NVFP4, INT8, INT4, GPTQ/AWQ, GGUF, compressed-tensors, ModelOpt, TorchAO, and [more](https://docs.vllm.ai/en/latest/features/quantization/index.html)
 - Optimized attention kernels including FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, and Triton
 - Optimized GEMM/MoE kernels for various precisions using CUTLASS, TRTLLM-GEN, CuTeDSL
@@ -48,7 +51,7 @@ vLLM is flexible and easy to use with:
 - Tool calling and reasoning parsers
 - OpenAI-compatible API server, plus Anthropic Messages API and gRPC support
 - Efficient multi-LoRA support for dense and MoE layers
-- Support for NVIDIA GPUs, AMD GPUs, Intel GPUs, and x86/ARM/PowerPC CPUs. Additionally, diverse hardware plugins such as Google TPUs, Intel Gaudi, IBM Spyre, Huawei Ascend, Rebellions NPU, Apple Silicon, MetaX GPU, Iluvatar CoreX GPU, and more.
+- Support for NVIDIA CUDA GPUs, including H20, H100 and B200.
 
 vLLM seamlessly supports 200+ model architectures on Hugging Face, including:
 

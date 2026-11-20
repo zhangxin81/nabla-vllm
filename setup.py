@@ -96,29 +96,19 @@ def is_metadata_only_build() -> bool:
     return bool({"egg_info", "dist_info"}.intersection(sys.argv[1:]))
 
 
-if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
-    logger.warning("VLLM_TARGET_DEVICE automatically set to `cpu` due to macOS")
-    VLLM_TARGET_DEVICE = "cpu"
-elif not (sys.platform.startswith("linux") or sys.platform.startswith("darwin")):
+if VLLM_TARGET_DEVICE not in {"cuda", "empty"}:
+    raise RuntimeError(
+        f"This fork supports CUDA builds only, got {VLLM_TARGET_DEVICE!r}. "
+        "Use VLLM_TARGET_DEVICE=empty for a metadata-only development install."
+    )
+if VLLM_TARGET_DEVICE != "empty" and (
+    not sys.platform.startswith("linux") or torch.version.cuda is None
+):
     logger.warning(
-        "vLLM only supports Linux platform (including WSL) and MacOS."
-        "Building on %s, "
-        "so vLLM may not be able to run correctly",
-        sys.platform,
+        "CUDA inference requires Linux and CUDA-enabled PyTorch; "
+        "creating a metadata-only development install."
     )
     VLLM_TARGET_DEVICE = "empty"
-elif sys.platform.startswith("linux") and os.getenv("VLLM_TARGET_DEVICE") is None:
-    if torch.version.hip is not None:
-        VLLM_TARGET_DEVICE = "rocm"
-        logger.info("Auto-detected ROCm")
-    elif torch.version.xpu is not None:
-        VLLM_TARGET_DEVICE = "xpu"
-        logger.info("Auto-detected XPU")
-    elif torch.version.cuda is not None:
-        VLLM_TARGET_DEVICE = "cuda"
-        logger.info("Auto-detected CUDA")
-    else:
-        VLLM_TARGET_DEVICE = "cpu"
 
 
 def is_sccache_available() -> bool:

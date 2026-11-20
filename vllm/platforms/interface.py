@@ -1718,3 +1718,9 @@ class Platform:
 class UnspecifiedPlatform(Platform):
     _enum = PlatformEnum.UNSPECIFIED
     device_type = ""
+
+
+class MetadataPlatform(UnspecifiedPlatform):
+    """Host tensors for cache/scheduler tests, without an inference backend."""
+
+    device_type = "cpu"
