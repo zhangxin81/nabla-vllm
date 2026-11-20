@@ -4,6 +4,9 @@ This fork targets Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA CUDA
 GPUs, including H20, H100 and B200. The initial upstream baseline is
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`.
 
+Imported upstream contributions and their validation scope are recorded in the
+[downstream PR integration record](bytevllm_pr_integration.md).
+
 ## Cache ownership
 
 Prefix identity, physical allocation and checkpoint placement are separate

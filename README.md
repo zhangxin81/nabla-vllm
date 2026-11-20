@@ -23,6 +23,8 @@ For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 This branch starts a CUDA-only specialization for Qwen3.8-Flash-Next and
 DeepSeek-V4.1-Flash. See the [cache design and migration status](docs/design/specialized_hybrid_cache.md).
+The [downstream PR integration record](docs/design/bytevllm_pr_integration.md)
+lists imported revisions, adaptations, and validation limits.
 
 vLLM is a fast and easy-to-use library for LLM inference and serving.
 
