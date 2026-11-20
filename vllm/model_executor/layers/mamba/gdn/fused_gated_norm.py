@@ -127,7 +127,7 @@ def fused_gdn_gated_rms_norm(
     if num_tokens == 0:
         return
     block_n = triton.next_power_of_2(head_v_dim)
-    rows_per_block = calc_rows_per_block(num_tokens, x.device)
+    rows_per_block = calc_rows_per_block(num_tokens * num_v_heads, x.device)
     grid = (triton.cdiv(num_tokens, rows_per_block), num_v_heads)
     _fused_gdn_gated_rms_norm_kernel[grid](
         x,

@@ -54,7 +54,9 @@ def test_output_projection_norms_per_head_and_flattens(
     assert out.dtype == dtype
 
 
-@pytest.mark.parametrize("num_tokens", [1, 37])
+@pytest.mark.parametrize("num_tokens", [1, 37, 63, 64, 65, 129])
+@pytest.mark.parametrize("num_heads", [4, 12, 24, 48])
+@pytest.mark.parametrize("weight_dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("norm_before_gate", [True, False])
 @pytest.mark.parametrize("activation", ["silu", "sigmoid"])
 @pytest.mark.skipif(
@@ -63,7 +65,11 @@ def test_output_projection_norms_per_head_and_flattens(
 )
 @torch.inference_mode()
 def test_fused_gated_rms_norm_strided_z_bitwise(
-    num_tokens: int, norm_before_gate: bool, activation: str
+    num_tokens: int,
+    num_heads: int,
+    weight_dtype: torch.dtype,
+    norm_before_gate: bool,
+    activation: str,
 ) -> None:
     """The Qwen3.5 fused gated RMS norm reads z from its packed strided view
     of the qkvz projection and matches `rmsnorm_fn` on the copied/reshaped
@@ -77,12 +83,12 @@ def test_fused_gated_rms_norm_strided_z_bitwise(
 
     torch.manual_seed(0)
     dtype = torch.bfloat16
-    num_heads, head_dim = 4, 128
+    head_dim = 128
     qkvz_row = 2 * 2 * 128 + 2 * num_heads * head_dim
     qkvz = torch.randn(num_tokens, qkvz_row, dtype=dtype, device="cuda")
     z_view = qkvz[:, qkvz_row - num_heads * head_dim :]
     x = torch.randn(num_tokens, num_heads, head_dim, dtype=dtype, device="cuda")
-    weight = torch.randn(head_dim, dtype=torch.float32, device="cuda")
+    weight = torch.randn(head_dim, dtype=weight_dtype, device="cuda")
     eps = 1e-6
 
     ref = rmsnorm_fn(

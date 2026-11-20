@@ -153,7 +153,7 @@ device_platform = _check_platform()
 
 is_amd = device_platform == "amd"
 is_intel = device_platform == "intel"
-is_nvidia = device_platform == "nvidia"
+is_nvidia = current_platform.is_cuda() and device_platform == "nvidia"
 is_intel_alchemist = is_intel and "Intel(R) Arc(TM) A" in torch.xpu.get_device_name(0)
 is_nvidia_hopper = is_nvidia and (
     "NVIDIA H" in current_platform.get_device_name(0)

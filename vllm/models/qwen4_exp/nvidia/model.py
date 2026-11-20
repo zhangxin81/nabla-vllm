@@ -18,9 +18,6 @@ from vllm.distributed import get_pp_group, tensor_model_parallel_all_reduce
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.fusion.mm_input_norm import build_mm_input_norm
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.mamba.gdn.fused_gated_norm import (
-    fused_gdn_gated_rms_norm_quant,
-)
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
     QwenGatedDeltaNetAttention,
 )
@@ -239,6 +236,13 @@ class Qwen4ExpDecoderLayer(nn.Module):
             )
 
         if layer_type == "linear_attention":
+            fused_norm = None
+            if vllm_config.compilation_config.mode == CompilationMode.NONE:
+                from vllm.model_executor.layers.mamba.gdn.fused_gated_norm import (
+                    fused_gdn_gated_rms_norm_quant,
+                )
+
+                fused_norm = fused_gdn_gated_rms_norm_quant
             self.linear_attn = QwenGatedDeltaNetAttention(
                 config,
                 vllm_config=vllm_config,
@@ -248,11 +252,7 @@ class Qwen4ExpDecoderLayer(nn.Module):
                 overlap_ba_proj=(
                     vllm_config.compilation_config.mode == CompilationMode.NONE
                 ),
-                fused_gdn_gated_rms_norm=(
-                    fused_gdn_gated_rms_norm_quant
-                    if vllm_config.compilation_config.mode == CompilationMode.NONE
-                    else None
-                ),
+                fused_gdn_gated_rms_norm=fused_norm,
             )
         elif layer_type in _QSA_LAYER_TYPES:
             use_qsa = getattr(config, "indexer_n_heads", None) is not None

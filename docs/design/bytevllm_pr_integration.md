@@ -136,6 +136,28 @@ changing their values. On the pre-fix source it failed at the device assertion:
 **1 failed, 3 deselected in 7.47s**. With #64670 the warmup file passed:
 **2 passed, 2 skipped in 9.17s**; the two skipped cases require ROCm.
 
+Expanded gated-norm coverage uses 4/12/24/48 value heads, FP32/BF16 norm
+weights and 1/37/63/64/65/129 token rows. It exposed a reduction-layout
+change: the shared kernel selected its row tile from tokens instead of
+`tokens * value_heads`, which the replaced FLA operation uses. Before the
+fix: **47 failed, 145 passed, 10 deselected in 81.69s (0:01:21)**. With the
+original tile selection restored, the whole norm suite passed:
+**202 passed in 82.77s (0:01:22)**. No tolerance or equality assertion changed.
+
+The metadata-only cache/prefix/deferred-free run initially failed model
+inspection because FLA detected the available CUDA driver while the explicitly
+selected platform was `empty`. GPU-name probing now requires the selected
+CUDA platform, and the shared norm is imported only at layer construction.
+After the fix: **284 passed in 46.15s**:
+
+```bash
+PYTHONPATH=<candidate-source> VLLM_TARGET_DEVICE=empty HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m pytest --confcutdir=<candidate-source>/tests/v1/core \
+  <candidate-source>/tests/v1/core/test_prefix_caching.py \
+  <candidate-source>/tests/v1/core/prefix_cache/test_partial_prefix_cache_primitives.py \
+  <candidate-source>/tests/v1/core/test_deferred_block_free.py -q
+```
+
 The stage17 Qwen H100 4P4D IPC diagnostic cancelled 12 requests, drained the
 queues, served three follow-up requests and reset the prefix caches. The
 strict direct-versus-P/D diagnostic had **12 token mismatches in 30 comparisons**.
