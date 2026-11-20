@@ -140,7 +140,6 @@ class TestDetermineWheelUrl(unittest.TestCase):
                 clear=True,
             ),
             patch("platform.machine", return_value="x86_64"),
-            patch.object(wheel_utils, "is_rocm_system", return_value=False),
             patch.object(
                 wheel_utils, "get_base_commit_in_main_branch", return_value=base
             ),
