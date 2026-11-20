@@ -26,12 +26,15 @@ class FreeByteRanges:
         self.free_bytes = capacity - reserved
         self.ranges = [(reserved, capacity)] if reserved < capacity else []
         self.allocated: set[tuple[int, int]] = set()
+        self._free_slot_counts: dict[int, int] = {}
 
     def copy(self, include_ownership: bool = True) -> "FreeByteRanges":
         clone = FreeByteRanges(self.capacity, self.reserved)
         clone.ranges = self.ranges.copy()
         clone.allocated = self.allocated.copy() if include_ownership else set()
         clone.free_bytes = self.free_bytes
+        if include_ownership:
+            clone._free_slot_counts = self._free_slot_counts.copy()
         return clone
 
     def contains(self, start: int, size: int) -> bool:
@@ -43,9 +46,12 @@ class FreeByteRanges:
             raise ValueError("Cache allocation overlaps live or reserved bytes")
         i = bisect_right(self.ranges, (start, self.capacity + 1)) - 1
         lo, hi = self.ranges[i]
-        self.ranges[i : i + 1] = [
-            (a, b) for a, b in ((lo, start), (start + size, hi)) if a < b
-        ]
+        parts = [(a, b) for a, b in ((lo, start), (start + size, hi)) if a < b]
+        for stride in self._free_slot_counts:
+            self._free_slot_counts[stride] += sum(
+                self._slots(a, b, stride) for a, b in parts
+            ) - self._slots(lo, hi, stride)
+        self.ranges[i : i + 1] = parts
         self.allocated.add((start, size))
         self.free_bytes -= size
 
@@ -66,14 +72,30 @@ class FreeByteRanges:
         end = start + size
         if i and self.ranges[i - 1][1] == start:
             i -= 1
-            start = self.ranges.pop(i)[0]
+            lo, hi = self.ranges.pop(i)
+            for stride in self._free_slot_counts:
+                self._free_slot_counts[stride] -= self._slots(lo, hi, stride)
+            start = lo
         if i < len(self.ranges) and self.ranges[i][0] == end:
-            end = self.ranges.pop(i)[1]
+            lo, hi = self.ranges.pop(i)
+            for stride in self._free_slot_counts:
+                self._free_slot_counts[stride] -= self._slots(lo, hi, stride)
+            end = hi
+        for stride in self._free_slot_counts:
+            self._free_slot_counts[stride] += self._slots(start, end, stride)
         self.ranges.insert(i, (start, end))
         self.free_bytes += size
 
     def free_slots(self, stride: int) -> int:
-        return sum(max(0, hi // stride - cdiv(lo, stride)) for lo, hi in self.ranges)
+        if stride not in self._free_slot_counts:
+            self._free_slot_counts[stride] = sum(
+                self._slots(lo, hi, stride) for lo, hi in self.ranges
+            )
+        return self._free_slot_counts[stride]
+
+    @staticmethod
+    def _slots(lo: int, hi: int, stride: int) -> int:
+        return max(0, hi // stride - cdiv(lo, stride))
 
 
 class CacheMemoryArena:
@@ -118,6 +140,7 @@ class CacheMemoryArena:
             last = min(cdiv(start + stride, other_stride), pool.num_gpu_blocks)
             cached_ids = pool.cached_block_hash_to_block.cached_block_ids
             watched_ids = pool._reuse_watchers
+            affected: Iterable[KVCacheBlock]
             if len(cached_ids) + len(watched_ids) < last - first:
                 affected_ids = {i for i in cached_ids if first <= i < last}
                 affected_ids.update(i for i in watched_ids if first <= i < last)
@@ -142,7 +165,7 @@ class CacheMemoryArena:
             raise ValueError("Cache allocation count must be non-negative")
         memory = self.memory.copy(include_ownership=False) if memory is None else memory
         stride = pool.block_stride_bytes
-        selected = []
+        selected: list[KVCacheBlock] = []
         current = pool.free_block_queue.fake_free_list_head.next_free_block
         tail = pool.free_block_queue.fake_free_list_tail
         while len(selected) < count:
@@ -174,6 +197,12 @@ class CacheMemoryArena:
     ) -> bool:
         if prepare:
             self.allocation_plan = None
+        if all(count == 0 for _, count in needs):
+            hits = tuple(hits)
+            if not hits:
+                if prepare:
+                    self.allocation_plan = {}
+                return True
         memory = self.memory.copy(include_ownership=False)
         seen: set[int] = set()
         for block in hits:

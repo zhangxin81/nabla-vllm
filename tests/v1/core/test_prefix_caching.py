@@ -6986,6 +6986,62 @@ def test_byte_ranges_reject_double_release_and_overlapping_reservation():
     assert ranges.ranges == [(16, 144)]
 
 
+@pytest.mark.parametrize("include_ownership", [False, True])
+def test_byte_range_slot_counts_follow_independent_copy_updates(include_ownership):
+    """Aligned slot counts stay exact after splits, merges and cloned plans."""
+    from vllm.v1.core.cache_memory_arena import FreeByteRanges
+
+    ranges = FreeByteRanges(512, 48)
+    strides = (16, 48, 80)
+
+    def check(memory):
+        for stride in strides:
+            expected = sum(
+                any(lo <= start and start + stride <= hi for lo, hi in memory.ranges)
+                for start in range(0, memory.capacity - stride + 1, stride)
+            )
+            assert memory.free_slots(stride) == expected
+
+    check(ranges)
+    ranges.reserve(64, 80)
+    check(ranges)
+    ranges.reserve(160, 96)
+    check(ranges)
+    clone = ranges.copy(include_ownership=include_ownership)
+    check(clone)
+    clone.reserve(288, 80)
+    check(clone)
+    check(ranges)
+    ranges.release(64, 80)
+    check(ranges)
+    check(clone)
+    ranges.release(160, 96)
+    check(ranges)
+    assert ranges.ranges == [(48, 512)]
+    clone.release(288, 80)
+    check(clone)
+
+
+def test_empty_arena_plan_preserves_live_and_cached_byte_ownership():
+    """A decode needing no pages still protects unreferenced prefix hits."""
+    arena, (tokens, states) = _native_resource_pools()
+    state = states.get_new_blocks(1)
+    key = make_block_hash_with_group_id(BlockHash(b"state"), 1)
+    state[0].set_block_hash(key)
+    states.cached_block_hash_to_block.insert(key, state[0])
+    states.free_blocks(state)
+    before = arena.memory.ranges.copy()
+    assert arena.can_allocate([(tokens, 0), (states, 0)], prepare=True)
+    assert arena.memory.ranges == before
+    assert tokens.get_new_blocks(0) == []
+    assert states.get_new_blocks(0) == []
+    assert states.cached_block_hash_to_block.get_one_block(key) is state[0]
+    # A zero-allocation plan with cached hits must still reserve their bytes.
+    assert not arena.can_allocate([(tokens, 9)], state, prepare=True)
+    assert arena.memory.ranges == before
+    arena.allocation_plan = None
+
+
 def _native_cache_manager():
     from tests.v1.core.utils import full_layer, mamba_layer
     from vllm.v1.kv_cache_interface import KVCacheGroup
@@ -7113,6 +7169,12 @@ def test_native_pool_references_and_evictions_preserve_exact_byte_ownership():
             occupied.update(interval)
         assert arena.memory.free_bytes == 144 - len(occupied)
         for pool in pools:
+            stride = pool.block_stride_bytes
+            expected_slots = sum(
+                not occupied.intersection(range(start, start + stride))
+                for start in range(-(-48 // stride) * stride, 192 - stride + 1, stride)
+            )
+            assert pool.get_num_free_blocks() == expected_slots
             for block in pool.blocks:
                 if not block.ref_cnt and block.block_hash is not None:
                     start = block.block_id * pool.block_stride_bytes

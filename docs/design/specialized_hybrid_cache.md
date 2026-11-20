@@ -2,7 +2,7 @@
 
 This fork targets Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA CUDA
 GPUs, including H20, H100 and B200. The current upstream baseline is
-`5a21c6c853bff525dbaa4cc06596e3c374599f85`. The initial specialization used
+`8e45c458f619dbabff879c0f53c58fd9f296e983`. The initial specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`.
 
 Imported upstream contributions and their validation scope are recorded in the
@@ -62,6 +62,14 @@ Every group consumes the same plan even when its allocation order differs.
 Unsuccessful admission commits no allocations. The plan is discarded at the
 end of allocation, including exceptional exits.
 
+Each queried stride caches its exact count of aligned free slots. Reserving a
+range adjusts the count for that range's split; releasing it adjusts the merged
+ranges. Repeated pool-capacity queries therefore do not scan every free interval.
+Admission snapshots omit these query caches and only plan byte ownership.
+Steps needing no new slots and no prefix hits keep an empty reservation plan
+without copying the arena. These paths preserve the same alignment, borrowing
+and prefix-reference rules.
+
 A write through one pool invalidates overlapping cached entries in other pools.
 The shared prefix index maintains the cached-slot membership used by this
 invalidation; it does not scan every virtual token slot when the index is sparse.
@@ -110,9 +118,10 @@ changes must be evaluated together before reuse.
 
 CUDA platform selection and NVIDIA kernel architecture selection remain.
 CPU, ROCm, XPU, TPU and Zen CPU platform implementations are removed.
-Non-CUDA build targets are rejected. Additional unreachable backend-specific
-operators and build recipes will be pruned after tracing both target models'
-dependency closure.
+Non-CUDA build targets are rejected. Unreachable backend-specific operators,
+model files, linear-kernel dispatch, build recipes and precompiled wheel routes
+have also been pruned against the two target models' dependency closure.
+Host-side tokenization, Engram offload and metadata tests remain.
 
 For host-only cache and scheduler tests, `VLLM_TARGET_DEVICE=empty` selects
 a metadata platform with host tensors. It has no inference backend.
