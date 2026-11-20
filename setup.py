@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import ctypes
 import importlib.util
 import json
 import logging
@@ -20,7 +19,7 @@ from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools_rust.build import build_rust
 from setuptools_scm import get_version
-from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+from torch.utils.cpp_extension import CUDA_HOME
 
 # Select vLLM release tags, excluding crate tags such as "proto-v0.3.0".
 VLLM_GIT_DESCRIBE_COMMAND = [
@@ -317,8 +316,6 @@ class cmake_build_ext(build_ext):
         # Make sure we use the nvcc from CUDA_HOME
         if _is_cuda() and CUDA_HOME is not None:
             cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/nvcc"]
-        elif _is_hip() and ROCM_HOME is not None:
-            cmake_args += [f"-DROCM_PATH={ROCM_HOME}"]
 
         other_cmake_args = os.environ.get("CMAKE_ARGS")
         if other_cmake_args:
@@ -412,7 +409,7 @@ class cmake_build_ext(build_ext):
             os.makedirs(os.path.dirname(dst_file), exist_ok=True)
             self.copy_file(file, dst_file)
 
-        if _is_cuda() or _is_hip():
+        if _is_cuda():
             # copy vllm/third_party/triton_kernels/**/*.py from self.build_lib
             # to current directory so that they can be included in the editable
             # build
@@ -513,83 +510,18 @@ class precompiled_wheel_utils:
     def fetch_metadata_for_variant(
         commit: str,
         variant: str | None,
-        *,
-        rocm: bool = False,
     ) -> tuple[list[dict], str]:
-        """Fetches metadata for a specific variant of the precompiled wheel.
-
-        For non-ROCm, fetches vllm metadata.
-
-        For ROCm, discovers all first-level packages and combines their
-        metadata into a single list.
-        """
+        """Fetch metadata for a CUDA wheel variant."""
         import json
-        from html.parser import HTMLParser
         from urllib.request import urlopen
 
         variant_dir = f"{variant}/" if variant is not None else ""
-
-        if not rocm:
-            # Keep original behavior
-            repo_url = f"https://wheels.vllm.ai/{commit}/{variant_dir}vllm/"
-            meta_url = repo_url + "metadata.json"
-            print(f"Trying to fetch nightly build metadata from {meta_url}")
-            with urlopen(meta_url) as resp:
-                wheels = json.loads(resp.read().decode("utf-8"))
-
-            return wheels, repo_url
-
-        # ROCm: discover all packages under the variant directory.
-        repo_url = f"https://wheels.vllm.ai/rocm/{commit}/{variant_dir}"
-
-        class LinkParser(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.links: list[str] = []
-
-            def handle_starttag(self, tag, attrs):
-                if tag == "a":
-                    href = dict(attrs).get("href")
-                    if href:
-                        self.links.append(href)
-
-        with urlopen(repo_url) as resp:
-            parser = LinkParser()
-            parser.feed(resp.read().decode("utf-8"))
-
-        packages = [
-            href.rstrip("/")
-            for href in parser.links
-            if href.endswith("/")
-            and href not in ("../", "./", "/")
-            and "/" not in href.rstrip("/")
-        ]
-
-        wheels: list[dict] = []
-
-        for package in packages:
-            meta_url = f"{repo_url}{package}/metadata.json"
-            print(f"Trying to fetch nightly build metadata from {meta_url}")
-            with urlopen(meta_url) as resp:
-                package_wheels = json.loads(resp.read().decode("utf-8"))
-            wheels.extend(package_wheels)
+        repo_url = f"https://wheels.vllm.ai/{commit}/{variant_dir}vllm/"
+        meta_url = repo_url + "metadata.json"
+        print(f"Trying to fetch nightly build metadata from {meta_url}")
+        with urlopen(meta_url) as resp:
+            wheels = json.loads(resp.read().decode("utf-8"))
         return wheels, repo_url
-
-    @staticmethod
-    def is_rocm_system() -> bool:
-        """Detect ROCm without relying on torch (for build environment)."""
-        if os.getenv("ROCM_PATH"):
-            return True
-        if os.path.isdir("/opt/rocm"):
-            return True
-        if which("rocminfo") is not None:
-            return True
-        try:
-            import torch
-
-            return torch.version.hip is not None
-        except ImportError:
-            return False
 
     @staticmethod
     def detect_system_cuda_variant() -> str:
@@ -632,261 +564,6 @@ class precompiled_wheel_utils:
         variant = supported.get(major, supported[max(supported)])
         print(f"Detected CUDA {cuda_version}, using variant {variant}")
         return variant
-
-    @staticmethod
-    def rocm_version_to_variant(rocm_version: str) -> str:
-        """Convert a ROCm version string to a wheel variant from its major and
-        minor version, e.g. 7.2.3 -> rocm72, 10.0.0 -> rocm100.
-        """
-        return "rocm" + "".join(rocm_version.split(".")[:2])
-
-    @staticmethod
-    def detect_system_rocm_variant() -> str | None:
-        """Auto-detect the ROCm wheel variant from the installed ROCm stack."""
-        rocm_version = get_rocm_version()
-        if not rocm_version:
-            try:
-                import torch
-
-                rocm_version = torch.version.hip
-            except Exception:
-                pass
-        if not rocm_version:
-            return None
-        variant = precompiled_wheel_utils.rocm_version_to_variant(rocm_version)
-        print(f"Detected ROCm {rocm_version}, using variant {variant}")
-        return variant
-
-    @staticmethod
-    def fetch_available_rocm_variants(commit: str) -> list[str]:
-        """List ROCm wheel variants published for a commit on wheels.vllm.ai."""
-        from urllib.request import urlopen
-
-        index_url = f"https://wheels.vllm.ai/rocm/{commit}/"
-        print(f"Fetching available ROCm variants from {index_url}")
-        try:
-            with urlopen(index_url) as resp:
-                html = resp.read().decode("utf-8")
-        except Exception as e:
-            logger.warning(
-                "Failed to fetch ROCm variant index for commit %s: %s", commit, e
-            )
-            return []
-        variants = sorted(set(re.findall(r"rocm\d+", html)))
-        print(f"Available ROCm variants for commit {commit}: {variants}")
-        return variants
-
-    @staticmethod
-    def resolve_rocm_wheel_variant(
-        commit: str, variant_override: str | None
-    ) -> str | None:
-        """Resolve a ROCm wheel variant for a commit from wheels.vllm.ai."""
-        env_variant = precompiled_wheel_utils.detect_system_rocm_variant()
-        available = precompiled_wheel_utils.fetch_available_rocm_variants(commit)
-
-        if variant_override is not None:
-            if env_variant and variant_override != env_variant:
-                logger.warning(
-                    "VLLM_PRECOMPILED_WHEEL_VARIANT=%s does not match the "
-                    "detected environment ROCm variant %s; refusing to use a "
-                    "different ROCm patch wheel",
-                    variant_override,
-                    env_variant,
-                )
-                return None
-            if available and variant_override not in available:
-                logger.warning(
-                    "Requested ROCm variant %s is not available for commit %s "
-                    "(available: %s)",
-                    variant_override,
-                    commit,
-                    available,
-                )
-                return None
-            return variant_override
-
-        if env_variant is None:
-            if available:
-                print(
-                    "Could not detect ROCm version from the environment; "
-                    f"available variants for commit {commit}: {available}"
-                )
-            return None
-
-        if env_variant in available:
-            return env_variant
-
-        logger.warning(
-            "Environment ROCm variant %s is not available for commit %s "
-            "(available: %s). Precompiled wheels may not be compatible.",
-            env_variant,
-            commit,
-            available,
-        )
-        return None
-
-    @staticmethod
-    def warn_if_rocm_torch_version_mismatch(
-        wheels: list[dict], repo_url: str, arch: str
-    ) -> None:
-        """Warn if installed torch differs from the custom ROCm build on
-        wheels.vllm.ai and suggest the correct install command."""
-        try:
-            installed = torch.__version__
-        except Exception:
-            return
-
-        def _wheel_version(pkg: str) -> str | None:
-            for w in wheels:
-                if w.get("package_name") == pkg and arch in w.get("platform_tag", ""):
-                    v = w["version"]
-                    if w.get("variant") and "+" not in v:
-                        v = f"{v}+{w['variant']}"
-                    return v
-            return None
-
-        expected = _wheel_version("torch")
-        if expected is None or installed == expected:
-            return
-
-        pkgs = f"torch=={expected}"
-        triton_ver = _wheel_version("triton")
-        if triton_ver:
-            pkgs += f" triton=={triton_ver}"
-
-        logger.warning(
-            "Installed PyTorch %s does not match the custom build %s "
-            "shipped with vLLM ROCm wheels. The ABI may differ from "
-            "official releases. If you hit extension load errors, "
-            "reinstall from the vLLM index:\n"
-            "  pip install %s --extra-index-url %s\n"
-            "  uv pip install %s --extra-index-url %s "
-            "--index-strategy unsafe-best-match",
-            installed,
-            expected,
-            pkgs,
-            repo_url,
-            pkgs,
-            repo_url,
-        )
-
-    @staticmethod
-    def find_local_rocm_wheel() -> str | None:
-        """Search for a local vllm wheel in common locations."""
-        import glob
-
-        for pattern in ["/vllm-workspace/dist/vllm-*.whl", "./dist/vllm-*.whl"]:
-            wheels = glob.glob(pattern)
-            if wheels:
-                return sorted(wheels)[-1]
-        return None
-
-    @staticmethod
-    def fetch_wheel_from_pypi_index(index_url: str, package: str = "vllm") -> str:
-        """Fetch the latest wheel URL from a PyPI-style simple index."""
-        import platform
-        from html.parser import HTMLParser
-        from urllib.parse import urljoin
-        from urllib.request import urlopen
-
-        arch = platform.machine()
-
-        class WheelLinkParser(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.wheels = []
-
-            def handle_starttag(self, tag, attrs):
-                if tag == "a":
-                    for name, value in attrs:
-                        if name == "href" and value.endswith(".whl"):
-                            self.wheels.append(value)
-
-        simple_url = f"{index_url.rstrip('/')}/{package}/"
-        print(f"Fetching wheel list from {simple_url}")
-        with urlopen(simple_url) as resp:
-            html = resp.read().decode("utf-8")
-
-        parser = WheelLinkParser()
-        parser.feed(html)
-
-        for wheel in reversed(parser.wheels):
-            if arch in wheel:
-                if wheel.startswith("http"):
-                    return wheel
-                return urljoin(simple_url, wheel)
-
-        raise ValueError(f"No compatible wheel found for {arch} at {simple_url}")
-
-    @staticmethod
-    def determine_wheel_url_rocm() -> tuple[str, str | None]:
-        """Determine the precompiled wheel for ROCm."""
-        # Search for local wheel first
-        local_wheel = precompiled_wheel_utils.find_local_rocm_wheel()
-        if local_wheel is not None:
-            print(f"Found local ROCm wheel: {local_wheel}")
-            return local_wheel, None
-
-        import platform
-
-        arch = platform.machine()
-        commit = os.getenv("VLLM_PRECOMPILED_WHEEL_COMMIT", "").lower()
-        if not commit or len(commit) != 40:
-            print(
-                f"VLLM_PRECOMPILED_WHEEL_COMMIT not valid: {commit}"
-                ", trying to fetch base commit in main branch"
-            )
-            commit = precompiled_wheel_utils.get_base_commit_in_main_branch()
-        variant = precompiled_wheel_utils.resolve_rocm_wheel_variant(
-            commit, os.getenv("VLLM_PRECOMPILED_WHEEL_VARIANT", None)
-        )
-        print(f"Using precompiled ROCm wheel commit {commit} with variant {variant}")
-        wheels, repo_url = None, None
-        if variant is not None:
-            try:
-                wheels, repo_url = precompiled_wheel_utils.fetch_metadata_for_variant(
-                    commit, variant, rocm=True
-                )
-                precompiled_wheel_utils.warn_if_rocm_torch_version_mismatch(
-                    wheels, repo_url, arch
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to fetch ROCm wheel metadata for variant %s: %s",
-                    variant,
-                    e,
-                )
-        if wheels is not None and repo_url is not None:
-            from urllib.parse import urljoin
-
-            for wheel in wheels:
-                if wheel.get("package_name") == "vllm" and arch in wheel.get(
-                    "platform_tag", ""
-                ):
-                    print(f"Found precompiled wheel metadata: {wheel}")
-                    if "path" not in wheel:
-                        raise ValueError(f"Wheel metadata missing path: {wheel}")
-                    wheel_url = urljoin(f"{repo_url}vllm/", wheel["path"])
-                    download_filename = wheel.get("filename")
-                    print(f"Using precompiled wheel URL: {wheel_url}")
-                    return wheel_url, download_filename
-            logger.warning(
-                "No precompiled vllm wheel found for architecture %s "
-                "from repo %s. All available wheels: %s",
-                arch,
-                repo_url,
-                wheels,
-            )
-
-        # Fall back to AMD's PyPI index
-        index_url = os.getenv(
-            "VLLM_ROCM_WHEEL_INDEX", "https://pypi.amd.com/vllm-rocm/simple"
-        )
-        print(f"Fetching ROCm precompiled wheel from {index_url}")
-        wheel_url = precompiled_wheel_utils.fetch_wheel_from_pypi_index(index_url)
-        download_filename = wheel_url.split("/")[-1].split("#")[0]
-        print(f"Using ROCm precompiled wheel: {wheel_url}")
-        return wheel_url, download_filename
 
     # Publication lags main by roughly 5-10 commits; anything much older is
     # unlikely to still match the checkout's compiled sources.
@@ -994,10 +671,6 @@ class precompiled_wheel_utils:
             print(f"Using user-specified precompiled wheel location: {wheel_location}")
             return wheel_location, None
         else:
-            # ROCm: resolve wheels from wheels.vllm.ai with environment-matched variant
-            if precompiled_wheel_utils.is_rocm_system():
-                return precompiled_wheel_utils.determine_wheel_url_rocm()
-
             import platform
 
             arch = platform.machine()
@@ -1119,8 +792,6 @@ class precompiled_wheel_utils:
                             "vllm/cumem_allocator.abi3.so",
                             "vllm/spinloop.abi3.so",
                             "vllm/fs_io_C.abi3.so",
-                            # ROCm-specific libraries
-                            "vllm/_rocm_C.abi3.so",
                         }
                     )
                 if extract_rust_frontend:
@@ -1262,63 +933,11 @@ def _no_device() -> bool:
 
 def _is_cuda() -> bool:
     has_cuda = torch.version.cuda is not None
-    return VLLM_TARGET_DEVICE == "cuda" and has_cuda and not _is_tpu()
-
-
-def _is_hip() -> bool:
-    return (
-        VLLM_TARGET_DEVICE == "cuda" or VLLM_TARGET_DEVICE == "rocm"
-    ) and torch.version.hip is not None
-
-
-def _is_tpu() -> bool:
-    return VLLM_TARGET_DEVICE == "tpu"
-
-
-def _is_cpu() -> bool:
-    return VLLM_TARGET_DEVICE == "cpu"
-
-
-def _is_xpu() -> bool:
-    return VLLM_TARGET_DEVICE == "xpu"
+    return VLLM_TARGET_DEVICE == "cuda" and has_cuda
 
 
 def _build_custom_ops() -> bool:
-    return _is_cuda() or _is_hip()
-
-
-def get_rocm_version():
-    # Get the Rocm version from the ROCM_HOME/bin/librocm-core.so
-    # see https://github.com/ROCm/rocm-core/blob/d11f5c20d500f729c393680a01fa902ebf92094b/rocm_version.cpp#L21
-    try:
-        if ROCM_HOME is None:
-            return None
-        librocm_core_file = Path(ROCM_HOME) / "lib" / "librocm-core.so"
-        if not librocm_core_file.is_file():
-            return None
-        librocm_core = ctypes.CDLL(librocm_core_file)
-        VerErrors = ctypes.c_uint32
-        get_rocm_core_version = librocm_core.getROCmVersion
-        get_rocm_core_version.restype = VerErrors
-        get_rocm_core_version.argtypes = [
-            ctypes.POINTER(ctypes.c_uint32),
-            ctypes.POINTER(ctypes.c_uint32),
-            ctypes.POINTER(ctypes.c_uint32),
-        ]
-        major = ctypes.c_uint32()
-        minor = ctypes.c_uint32()
-        patch = ctypes.c_uint32()
-
-        if (
-            get_rocm_core_version(
-                ctypes.byref(major), ctypes.byref(minor), ctypes.byref(patch)
-            )
-            == 0
-        ):
-            return f"{major.value}.{minor.value}.{patch.value}"
-        return None
-    except Exception:
-        return None
+    return _is_cuda()
 
 
 def get_nvcc_cuda_version() -> Version:
@@ -1337,8 +956,8 @@ def get_nvcc_cuda_version() -> Version:
 
 
 def get_vllm_version() -> str:
-    # Allow overriding the version. This is useful to build platform-specific
-    # wheels (e.g. CPU, TPU) without modifying the source.
+    # Allow overriding the version. This is useful to build CUDA
+    # wheels without modifying the source.
     if env_version := os.getenv("VLLM_VERSION_OVERRIDE"):
         print(f"Overriding VLLM version with {env_version} from VLLM_VERSION_OVERRIDE")
         os.environ["SETUPTOOLS_SCM_PRETEND_VERSION"] = env_version
@@ -1370,94 +989,10 @@ def get_vllm_version() -> str:
                     # skip this for source tarball, required for pypi
                     if "sdist" not in sys.argv:
                         version += f"{sep}cu{cuda_version_str}"
-        elif _is_hip():
-            # Get the Rocm Version
-            rocm_version = get_rocm_version() or torch.version.hip
-            if rocm_version and rocm_version != envs.VLLM_MAIN_CUDA_VERSION:
-                version += sep + precompiled_wheel_utils.rocm_version_to_variant(
-                    rocm_version
-                )
-        elif _is_tpu():
-            version += f"{sep}tpu"
-        elif _is_cpu():
-            # Check the local VLLM_TARGET_DEVICE (may be set by auto-detect above),
-            # not envs.VLLM_TARGET_DEVICE, so CPU-only hosts still get `+cpu`.
-            if VLLM_TARGET_DEVICE == "cpu":
-                version += f"{sep}cpu"
-        elif _is_xpu():
-            version += f"{sep}xpu"
         else:
             raise RuntimeError("Unknown runtime environment")
 
     return version
-
-
-def _check_requirements_preinstalled(requirements: list[str]) -> None:
-    """`python setup.py develop` satisfies missing `install_requires` via
-    setuptools' legacy easy_install path instead of pip's wheel-aware
-    resolver. That path has repeatedly tried (and failed) to compile old
-    sdists of fast-moving C-extension packages such as aiohttp from source
-    against the running Python's headers, e.g.
-    https://github.com/vllm-project/vllm/issues/34073. Fail fast with an
-    actionable message instead of a cryptic compiler error.
-
-    Skipped under `--no-deps`, which makes setuptools skip `install_requires`
-    processing entirely, so the easy_install path this guards against is
-    unreachable anyway.
-    """
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import requires as installed_requires
-    from importlib.metadata import version as installed_version
-
-    from packaging.requirements import Requirement
-
-    missing = []
-    checked = set()
-
-    def _check(req_str: str, extra: str | None = None) -> None:
-        # Strip inline "# comment" suffixes (as pip does when reading
-        # requirements files); packaging.Requirement cannot parse them.
-        req_str = re.split(r"\s+#", req_str, maxsplit=1)[0].strip()
-        try:
-            req = Requirement(req_str)
-        except Exception:
-            return
-        # `extra` is only set when recursing into an extra's own deps
-        # below; it selects which `; extra == "..."` markers apply.
-        if req.marker is not None and not req.marker.evaluate(
-            {"extra": extra} if extra else None
-        ):
-            return
-        if (req.name, extra) in checked:
-            return
-        checked.add((req.name, extra))
-        try:
-            installed = installed_version(req.name)
-        except PackageNotFoundError:
-            missing.append(req_str)
-            return
-        if req.specifier and not req.specifier.contains(installed, prereleases=True):
-            missing.append(f"{req_str} (found {req.name}=={installed})")
-            return
-        # A requested extra (e.g. "fastapi[standard]") pulls in packages
-        # that easy_install resolves too, so check those as well.
-        for extra_name in req.extras:
-            for dep in installed_requires(req.name) or []:
-                _check(dep, extra=extra_name)
-
-    for req_str in requirements:
-        _check(req_str)
-
-    if missing:
-        raise RuntimeError(
-            "The following dependencies are missing or outdated:\n  "
-            + "\n  ".join(missing)
-            + "\n\n`python setup.py develop` cannot reliably install these "
-            "itself (see https://github.com/vllm-project/vllm/issues/34073). "
-            "Install them with pip first, e.g.:\n"
-            "  pip install -r requirements/rocm.txt\n"
-            "then re-run `python setup.py develop`."
-        )
 
 
 def get_requirements() -> list[str]:
@@ -1502,19 +1037,10 @@ def get_requirements() -> list[str]:
                 req = req.replace("humming-kernels[cu13]", "humming-kernels[cu12]")
             modified_requirements.append(req)
         requirements = modified_requirements
-    elif _is_hip():
-        requirements = _read_requirements("rocm.txt")
-        if "develop" in sys.argv[1:] and "--no-deps" not in sys.argv[1:]:
-            _check_requirements_preinstalled(requirements)
-        requirements += get_rocm_device_requirements()
-    elif _is_tpu():
-        requirements = _read_requirements("tpu.txt")
-    elif _is_cpu():
-        requirements = _read_requirements("cpu.txt")
-    elif _is_xpu():
-        requirements = _read_requirements("xpu.txt")
     else:
-        raise ValueError("Unsupported platform, please use CUDA, ROCm, or CPU.")
+        raise ValueError(
+            "Unsupported platform, please use CUDA or a metadata-only build."
+        )
     return requirements
 
 
@@ -1527,38 +1053,17 @@ def get_cvcuda_requirements() -> list[str]:
     return ["cvcuda-cu13==0.19.0"]
 
 
-def get_rocm_device_requirements() -> list[str]:
-    """GPU kernel packages for TheRock builds.
-
-    TheRock ships GPU kernels as separate per-arch wheels selected through
-    `[device-<arch>]` extras on torch, torchvision and rocm. Require them for
-    every arch this wheel was compiled for, so `pip install vllm` works on
-    any supported GPU.
-    """
-    if not _is_hip() or importlib.util.find_spec("rocm_sdk") is None:
-        return []
-    arches = [a for a in os.getenv("PYTORCH_ROCM_ARCH", "").split(";") if a]
-    return [
-        f"{pkg}[device-{arch}]"
-        for pkg in ("torch", "torchvision", "rocm")
-        for arch in arches
-    ]
-
-
 ext_modules = []
 
-if _is_cuda() or _is_hip():
+if _is_cuda():
     ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
     # Optional since this doesn't get built (produce an .so file). This is just
     # copying the relevant .py files from the source repository.
     ext_modules.append(CMakeExtension(name="vllm.triton_kernels", optional=True))
 
-if not _is_xpu():
-    ext_modules.append(CMakeExtension(name="vllm.spinloop"))
-    ext_modules.append(CMakeExtension(name="vllm.fs_io_C"))
+ext_modules.append(CMakeExtension(name="vllm.spinloop"))
+ext_modules.append(CMakeExtension(name="vllm.fs_io_C"))
 
-if _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
@@ -1600,22 +1105,10 @@ if _is_cuda():
     # tml-fa4 is copied into an isolated vllm.third_party package.
     ext_modules.append(CMakeExtension(name="vllm.tml_fa4", optional=True))
 
-if _is_cpu():
-    import platform
-
-    if platform.machine() in ("x86_64", "AMD64"):
-        ext_modules.append(CMakeExtension(name="vllm._C"))
-        ext_modules.append(CMakeExtension(name="vllm._C_AVX512"))
-        ext_modules.append(CMakeExtension(name="vllm._C_AVX2"))
-    else:
-        ext_modules.append(CMakeExtension(name="vllm._C"))
 
 if _build_custom_ops():
-    if _is_hip():
-        ext_modules.append(CMakeExtension(name="vllm._C"))
-    if _is_cuda() or _is_hip():
-        ext_modules.append(CMakeExtension(name="vllm._C_stable_libtorch"))
-        ext_modules.append(CMakeExtension(name="vllm._moe_C_stable_libtorch"))
+    ext_modules.append(CMakeExtension(name="vllm._C_stable_libtorch"))
+    ext_modules.append(CMakeExtension(name="vllm._moe_C_stable_libtorch"))
 
 package_data = {
     "vllm": [
