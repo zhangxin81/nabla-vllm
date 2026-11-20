@@ -33,6 +33,12 @@ from tests.v1.kv_connector.unit.offloading_connector.utils import (
 from vllm.config import ParallelConfig, set_current_vllm_config
 from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_worker as bw
+from vllm.distributed.kv_transfer.kv_connector.v1.nixl.local_fastpath import (
+    IpcAllocation,
+    coalesce_copy_spans,
+    expand_strided_descriptors,
+    translate_remote_addresses,
+)
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.metadata import (
     NixlAgentMetadata,
     NixlConnectorMetadata,
@@ -3246,4 +3252,84 @@ def test_pull_from_pp_stages_rejects_a_layer_no_stage_holds():
     with pytest.raises(RuntimeError, match="exactly once"):
         decode.add_remote_agent(
             _pp_stage_metadata(stages[1], 1), remote_pp_rank=1, remote_pp_size=2
+        )
+
+
+@pytest.mark.cpu_test
+def test_local_fastpath_reuses_nixl_descriptor_geometry():
+    descriptors = np.array(
+        [
+            [1000, 16, 0, 32, 3],
+            [2000, 8, 0, 8, 2],
+        ],
+        dtype=np.int64,
+    )
+    addresses, lengths = expand_strided_descriptors(
+        descriptors, np.array([0, 2, 3, 4], dtype=np.int32)
+    )
+    assert addresses.tolist() == [1000, 1064, 2000, 2008]
+    assert lengths.tolist() == [16, 16, 8, 8]
+
+
+@pytest.mark.cpu_test
+def test_local_fastpath_translates_and_coalesces_remote_pages():
+    allocation = IpcAllocation(
+        handle=bytes(range(64)),
+        size=4096,
+        exported_base=1000,
+        offset=128,
+        length=512,
+    )
+    sources = translate_remote_addresses(
+        np.array([1000, 1016, 1048], dtype=np.int64),
+        (allocation,),
+        (10_000,),
+    )
+    spans = coalesce_copy_spans(
+        sources,
+        np.array([20_000, 20_016, 20_048], dtype=np.int64),
+        np.array([16, 16, 8], dtype=np.int64),
+        np.array([16, 16, 8], dtype=np.int64),
+    )
+    assert [(span.src, span.dst, span.length) for span in spans] == [
+        (10_000, 20_000, 32),
+        (10_048, 20_048, 8),
+    ]
+
+
+@pytest.mark.cpu_test
+def test_local_ipc_descriptor_cannot_cross_exported_allocation():
+    allocations = (
+        IpcAllocation(b"a" * 64, 100, 1000, 0, 100),
+        IpcAllocation(b"b" * 64, 100, 1100, 0, 100),
+    )
+    assert translate_remote_addresses(
+        np.array([1090]), allocations, (3000, 5000), np.array([10])
+    ).tolist() == [3090]
+    with pytest.raises(ValueError, match="outside CUDA IPC allocations"):
+        translate_remote_addresses(
+            np.array([1090]), allocations, (3000, 5000), np.array([20])
+        )
+
+
+@pytest.mark.cpu_test
+def test_local_fastpath_merges_aliased_fa_and_ssm_ranges():
+    """Shared physical pages are copied once despite overlapping logical views."""
+    spans = coalesce_copy_spans(
+        np.array([1048, 1000, 1016, 1000]),
+        np.array([2048, 2000, 2016, 2000]),
+        np.array([32, 64, 32, 64]),
+        np.array([32, 64, 32, 64]),
+    )
+    assert [(span.src, span.dst, span.length) for span in spans] == [(1000, 2000, 80)]
+
+
+@pytest.mark.cpu_test
+def test_local_fastpath_rejects_conflicting_aliased_sources():
+    with pytest.raises(ValueError, match="different sources"):
+        coalesce_copy_spans(
+            np.array([1000, 3000]),
+            np.array([2000, 2016]),
+            np.array([64, 32]),
+            np.array([64, 32]),
         )
