@@ -537,6 +537,7 @@ def make_builder(
     window: int = WINDOW,
     max_image_tokens: int = MAX_IMG,
     max_num_batched_tokens: int = 64,
+    max_num_seqs: int = 8,
     model_name: str = "Qwen/Qwen3-0.6B",
     builder_cls: type[
         DeepseekSparseSWAMetadataBuilder
@@ -548,7 +549,7 @@ def make_builder(
         model_name=model_name,
         max_model_len=4096,
         max_num_batched_tokens=max_num_batched_tokens,
-        max_num_seqs=8,
+        max_num_seqs=max_num_seqs,
         hf_config_override={"sliding_window": window}
         | (vision_fields if vision and not deepseek_v4_config else {}),
     )
@@ -1006,3 +1007,82 @@ def test_prefix_cache_replays_the_swa_window(
     assert config.manager_cls.prefix_replay_tokens(config) == (
         window if replays_window else 0
     )
+
+
+@requires_accelerator
+@pytest.mark.parametrize("num_reqs", [3, 128])
+@pytest.mark.parametrize("row_padding", [0, 3])
+def test_v41_swa_siblings_match_native_tables_and_graph_replay(
+    num_reqs: int, row_padding: int
+):
+    """Sibling tables keep their own physical IDs, padding and replay boundary."""
+    from tests.v1.kv_connector.unit.utils import scheduler_test_model
+    from vllm.models.deepseek_v41.nvidia.model_state import _fill_decode_swa_siblings
+
+    seq_lens = [30 + 7 * i for i in range(num_reqs)]
+    query_lens = [1] * num_reqs
+    qsl, lengths, _, slots, table = make_batch(seq_lens, query_lens, DEVICE_TYPE)
+    slots[1] = -1
+    sibling_slots = torch.where(slots >= 0, slots + 1000, -1)
+    backing = torch.zeros(
+        num_reqs,
+        table.shape[1] + row_padding,
+        dtype=table.dtype,
+        device=DEVICE_TYPE,
+    )
+    sibling_table = backing[:, : table.shape[1]]
+    sibling_table.copy_(table + 50)
+    replay_start = torch.tensor(
+        [max(0, length - 5) for length in seq_lens],
+        dtype=torch.int32,
+        device=DEVICE_TYPE,
+    )
+    builders = [
+        make_builder(
+            vision=False,
+            max_num_batched_tokens=max(64, num_reqs),
+            max_num_seqs=max(8, num_reqs),
+            model_name=scheduler_test_model().name,
+        )
+        for _ in range(3)
+    ]
+    leader, sibling, reference = builders
+
+    def build(builder, block_table, slot_mapping):
+        return builder.build(
+            0,
+            CommonAttentionMetadata(
+                query_start_loc=qsl,
+                query_start_loc_cpu=qsl.cpu(),
+                seq_lens=lengths,
+                seq_lens_cpu_upper_bound=lengths.cpu(),
+                num_reqs=num_reqs,
+                num_actual_tokens=num_reqs,
+                max_query_len=1,
+                max_seq_len=max(seq_lens) + 2,
+                block_table_tensor=block_table,
+                slot_mapping=slot_mapping,
+            ),
+            replay_start=replay_start,
+        )
+
+    sibling.decode_swa_indices.fill_(7)
+    sibling.decode_swa_lens.fill_(7)
+    metadata = build(leader, table, slots)
+    entries = [(sibling, sibling_table, sibling_slots)]
+    ptr_tables = {}
+    actual = _fill_decode_swa_siblings(metadata, entries, ptr_tables)[0]
+
+    def check():
+        expected = build(reference, sibling_table, sibling_slots)
+        for name in ("is_valid_token", "decode_swa_indices", "decode_swa_lens"):
+            assert torch.equal(getattr(actual, name), getattr(expected, name)), name
+
+    check()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        _fill_decode_swa_siblings(metadata, entries, ptr_tables)
+    lengths.add_(2)
+    sibling_table.add_(11)
+    graph.replay()
+    check()

@@ -14,12 +14,12 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vllm"
-authors = [{name = "vLLM Team"}]
+name = "nabla-vllm"
+authors = [{name = "nabla-vllm Contributors"}, {name = "vLLM Team"}]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
-description = "A high-throughput and memory-efficient inference and serving engine for LLMs"
+description = "NVIDIA inference runtime for Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash"
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -35,11 +35,12 @@ requires-python = ">=3.11,<3.15"
 dynamic = [ "version", "dependencies", "optional-dependencies"]
 
 [project.urls]
-Homepage="https://github.com/vllm-project/vllm"
-Documentation="https://docs.vllm.ai/en/latest/"
-Slack="https://slack.vllm.ai/"
+Homepage="https://github.com/zhangxin81/nabla-vllm"
+Documentation="https://github.com/zhangxin81/nabla-vllm/tree/main/docs"
+Upstream="https://github.com/vllm-project/vllm"
 
 [project.scripts]
+nabla-vllm = "vllm.entrypoints.cli.main:main"
 vllm = "vllm.entrypoints.cli.main:main"
 
 [project.entry-points."vllm.general_plugins"]

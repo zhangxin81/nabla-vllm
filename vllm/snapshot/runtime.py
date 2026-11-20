@@ -897,7 +897,7 @@ class LocalSnapshotTools:
         torch_version, cuda_runtime = self._torch_identity()
         host_id = Path("/etc/machine-id").read_text().strip()
         return SnapshotRuntimeIdentity(
-            vllm_version=importlib.metadata.version("vllm"),
+            vllm_version=importlib.metadata.version("nabla-vllm"),
             python_version=platform.python_version(),
             torch_version=torch_version,
             cuda_runtime=cuda_runtime,

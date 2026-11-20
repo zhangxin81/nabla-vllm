@@ -5,11 +5,11 @@
 Note that all future modules must be lazily loaded within main
 to avoid certain eager import breakage."""
 
-import importlib.metadata
 import sys
 from importlib.util import find_spec
 
 from vllm.logger import configure_logging_from_args, init_logger
+from vllm.version import __version__
 
 logger = init_logger(__name__)
 
@@ -86,14 +86,14 @@ def main():
             )
 
     parser = FlexibleArgumentParser(
-        description="vLLM CLI",
+        description="nabla-vllm CLI",
         epilog=VLLM_SUBCMD_PARSER_EPILOG.format(subcmd="[subcommand]"),
     )
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=importlib.metadata.version("vllm"),
+        version=__version__,
     )
     subparsers = parser.add_subparsers(required=False, dest="subparser")
     cmds = {}

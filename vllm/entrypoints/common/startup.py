@@ -4,45 +4,23 @@ import dataclasses
 import os
 from argparse import Namespace
 from logging import Logger
-from string import Template
 from typing import Any
 
-from vllm import EngineArgs, envs
-from vllm.logger import current_formatter_type, init_logger
+from vllm import EngineArgs
+from vllm.logger import init_logger
 
 logger = init_logger(__name__)
 
 
 def log_version_and_model(lgr: Logger, version: str, model_name: str) -> None:
-    if envs.VLLM_DISABLE_LOG_LOGO or (formatter := current_formatter_type(lgr)) is None:
-        message = "vLLM server version %s, serving model %s"
-    else:
-        logo_template = Template(
-            "\n       ${w}█     █     █▄   ▄█${r}\n"
-            " ${o}▄▄${r} ${b}▄█${r} ${w}█     █     █ ▀▄▀ █${r}  version ${w}%s${r}\n"
-            "  ${o}█${r}${b}▄█▀${r} ${w}█     █     █     █${r}  model   ${w}%s${r}\n"
-            "   ${b}▀▀${r}  ${w}▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀${r}\n"
-        )
-        colors = {
-            "w": "\033[1m",  # bold, default foreground
-            "o": "\033[93m",  # orange
-            "b": "\033[94m",  # blue
-            "r": "\033[0m",  # reset
-        }
-        if formatter != "color":
-            # monochrome logo (no ansi escape codes)
-            colors = dict.fromkeys(colors, "")
-
-        message = logo_template.substitute(colors)
-
-    lgr.info(message, version, model_name)
+    lgr.info("nabla-vllm server version %s, serving model %s", version, model_name)
 
 
 VLLM_SUBCMD_PARSER_EPILOG = (
-    "For full list:            vllm {subcmd} --help=all\n"
-    "For a section:            vllm {subcmd} --help=ModelConfig    (case-insensitive)\n"  # noqa: E501
-    "For a flag:               vllm {subcmd} --help=max-model-len  (_ or - accepted)\n"  # noqa: E501
-    "Documentation:            https://docs.vllm.ai\n"
+    "For full list:            nabla-vllm {subcmd} --help=all\n"
+    "For a section:            nabla-vllm {subcmd} --help=ModelConfig    (case-insensitive)\n"  # noqa: E501
+    "For a flag:               nabla-vllm {subcmd} --help=max-model-len  (_ or - accepted)\n"  # noqa: E501
+    "Documentation:            https://github.com/zhangxin81/nabla-vllm/tree/main/docs\n"
 )
 
 

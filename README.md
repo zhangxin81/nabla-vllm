@@ -1,6 +1,6 @@
-# bytevllm
+# nabla-vllm
 
-bytevllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
+nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 **DeepSeek-V4.1-Flash** 构建专用推理运行时。硬件范围限定为 NVIDIA CUDA，
 保留 H20、H100、B200 等架构各自需要的执行路径。
 
@@ -37,20 +37,20 @@ checkpoint 管理，但不引入 SGLang 运行时依赖。
 | --- | --- |
 | CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现；保留 NVIDIA 架构选择 |
 | 公共前缀索引 | `PrefixCacheIndex` 已接入 coordinator 和物理 `BlockPool`，保留池内 ID 与 owner 引用 |
-| 独立 state slot 和统一字节预算 | 已接入准入、分配、runner、清零和复制；NIXL 首步续写正在验证 |
-| 模型与内核依赖裁剪 | 继续按两个目标模型的依赖闭包推进 |
+| 独立 state slot 和统一字节预算 | 已接入准入、分配、runner、清零、复制和 NIXL 续写；组合服务验证进行中 |
+| 模型与内核依赖裁剪 | 已删除无关模型和后端实现，保留两个模型及 draft 的依赖闭包 |
 | 下游 PR 集成 | 已导入选定的 FlashMLA、DFlash、FP8、NIXL IPC 和 proxy 改动，见集成记录 |
 
 Attention page 与 GDN state slot 已按各自的原生 stride 计价，
 通过稳定的 tensor view 共用 backing allocation。正式显存容量与吞吐结果仍待服务测试。
 导入的每个 PR 也需要在组合后的代码、目标模型和硬件上重新验证。
-具体来源和历史验证范围见 [PR 集成记录](docs/design/bytevllm_pr_integration.md)。
+具体来源和历史验证范围见 [PR 集成记录](docs/design/nabla_vllm_pr_integration.md)。
 
 ## 性能基线与迭代
 
 最新实验为 **8× H100 80GB，4P4D，两侧 TP=4／EP=4**。
 Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
-比较最新上游 vLLM、bytevllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 bytevllm。
+比较最新上游 vLLM、nabla-vllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 nabla-vllm。
 
 测试分别记录以下权重，避免混合不同 checkpoint 的结果：
 
@@ -58,7 +58,7 @@ Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
 - DeepSeek-V4.1-Flash-3。
 - Qwen3.8-Flash-Next-FP8（补充权重）。
 
-[H100 基线记录](docs/benchmarks/bytevllm/h100-4p4d-20261120.md)
+[H100 基线记录](docs/benchmarks/nabla-vllm/h100-4p4d-20261120.md)
 包含输入输出矩阵、吞吐、TTFT、TPOT、实际请求长度和验证边界。
 每份基线固定源码 SHA、权重指纹、依赖、并行方式、内核选择和采样参数，
 并保留可比较的 CSV、图表和复现命令。
@@ -70,11 +70,12 @@ Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
 
 ## 开发与运行
 
-包名和 CLI 暂时仍为 `vllm`。使用 `uv` 管理环境和依赖：
+发行包和主要 CLI 为 `nabla-vllm`，Python 导入路径为 `vllm`，保留 `vllm` CLI 别名。
+使用 `uv` 管理环境和依赖：
 
 ```bash
-git clone https://github.com/zhangxin81/bytevllm.git
-cd bytevllm
+git clone https://github.com/zhangxin81/nabla-vllm.git
+cd nabla-vllm
 uv venv --python 3.12
 source .venv/bin/activate
 VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
@@ -99,7 +100,7 @@ cmake --build --preset release --target install
 
 ## 上游与贡献
 
-bytevllm 基于 [vLLM](https://github.com/vllm-project/vllm)，初始上游基线为
+nabla-vllm 基于 [vLLM](https://github.com/vllm-project/vllm)，初始上游基线为
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`。
 沿用其 [Apache-2.0 许可](LICENSE)，并保留上游归属和贡献记录。
 贡献时遵循 [AGENTS.md](AGENTS.md) 和现有领域指南；PR 应说明设计、重复工作检查、

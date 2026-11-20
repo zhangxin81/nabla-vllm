@@ -1,6 +1,6 @@
 # NixlConnector Usage Guide
 
-NixlConnector is a high-performance KV cache transfer connector for vLLM's disaggregated prefilling feature. It provides fully asynchronous send/receive operations using the NIXL library for efficient cross-process KV cache transfer.
+NixlConnector transfers the target models' KV and recurrent state between nabla-vllm prefill and decode processes. It provides fully asynchronous send/receive operations using the NIXL library for efficient cross-process KV cache transfer.
 
 `NixlPullConnector` is the canonical name for the pull connector; `NixlConnector` remains an alias, including inside `MultiConnector`. Both names use the same configuration checks and defaults.
 
@@ -14,14 +14,6 @@ Install the NIXL library: `uv pip install nixl`, as a quick start on Nvidia plat
 
 - Refer to [NIXL official repository](https://github.com/ai-dynamo/nixl) for more installation instructions
 - The specified required NIXL version can be found in [requirements/kv_connectors.txt](../../requirements/kv_connectors.txt) and other relevant config files
-
-For ROCm, the [ROCm Dockerfile](../../docker/Dockerfile.rocm) builds NIXL and UCX with ROCm support from source.
-
-For non-cuda platform, please install nixl with ucx build from source, instructed as below.
-
-```bash
-python tools/install_nixl_from_source_ubuntu.py
-```
 
 ### Transport Configuration
 
@@ -45,7 +37,7 @@ To select a different backend, set `kv_connector_extra_config.backends` in `--kv
 ### Example: using LIBFABRIC backend
 
 ```bash
-vllm serve <MODEL> \
+nabla-vllm serve <MODEL> \
   --kv-transfer-config '{
     "kv_connector":"NixlConnector",
     "kv_role":"kv_producer",
@@ -56,7 +48,7 @@ vllm serve <MODEL> \
 You can also pass JSON keys individually using dotted arguments, and you can append list elements using `+`:
 
 ```bash
-vllm serve <MODEL> \
+nabla-vllm serve <MODEL> \
   --kv-transfer-config.kv_connector NixlConnector \
   --kv-transfer-config.kv_role kv_producer \
   --kv-transfer-config.kv_connector_extra_config.backends+ LIBFABRIC
@@ -70,7 +62,7 @@ vllm serve <MODEL> \
 `kv_connector_extra_config.ucx_backend_params` passes extra init parameters to NIXL's UCX backend. Values are strings. For example, NIXL creates UCX with `ucx_error_handling_mode=peer` by default; UCX then uses only transports that can detect peer failure, which can exclude intra-node GPU transports such as `rocm_ipc`. To trade that error handling for those transports:
 
 ```bash
-vllm serve <MODEL> \
+nabla-vllm serve <MODEL> \
   --kv-transfer-config '{
     "kv_connector":"NixlConnector",
     "kv_role":"kv_both",
@@ -90,9 +82,35 @@ mkdir -p /dev/nvidia-caps-imex-channels
 mknod /dev/nvidia-caps-imex-channels/channel0 c "$major" 0
 ```
 
-Check the transport with `UCX_PROTO_INFO=y`: KV reads should show `cuda_ipc`, not `tcp`. Transfers across hosts use RDMA and need no channel: pass `--enable-extensible-kv-cache` to keep the feature on.
+Check the transport with `UCX_PROTO_INFO=y`: KV reads should show `cuda_ipc`, not `tcp`. Transfers across hosts use RDMA and need no channel. The target-model arena still requires `--disable-extensible-kv-cache`.
 
 ## Basic Usage (on the same host)
+
+### Native KV pages and recurrent-state slots
+
+The target models use independent pool-local IDs over a stable CUDA allocation.
+Attention groups allocate token pages; GDN and PLE groups allocate state slots.
+One arena accounts for their actual backing byte ranges, including alignment,
+active requests, copies and transfers. Checkpoint retention selects committed
+logical token positions separately from physical slot allocation.
+
+NIXL protocol **19** advertises every region's native capacity and stride.
+Producer and consumer must run the same protocol and compatible group geometry;
+P and D capacities may differ without imposing a fixed page-to-state ratio.
+An imported prefix includes its terminal recurrent state. Its first writable
+decode state is reserved in the same admission plan, and speculative scratch
+columns are excluded from the imported prefix by logical position. The source
+retains its allocation until the transfer and its notification complete.
+
+The independent arena requires a block-outermost layout and disables extensible
+KV allocation, including on cross-host transfers. CUDA graph views keep stable
+addresses. The index IDs remain internal and are never used as GPU or NIXL IDs.
+See [cache ownership](../design/specialized_hybrid_cache.md) for admission,
+checkpoint, copy-on-write and reclamation invariants.
+
+The measured topology is 8 H100s with 4 prefill GPUs and 4 decode GPUs, TP=4
+and EP=4 on each side. Refer to the [baseline](../benchmarks/nabla-vllm/h100-4p4d-20261120.md)
+for exact model-specific kernel settings and validation boundaries.
 
 ### Stream-ordered local CUDA IPC
 
@@ -147,13 +165,14 @@ per-range asynchronous copy implementation of `swap_blocks_batch`.
 Start a prefiller instance that produces KV caches
 
 ```bash
-# 1st GPU as prefiller
-CUDA_VISIBLE_DEVICES=0 \
+# Four GPUs for prefill
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
-vllm serve Qwen/Qwen3-0.6B \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 \
   --port 8100 \
-  --enforce-eager \
+  --tensor-parallel-size 4 --enable-expert-parallel \
+  --language-model-only --disable-extensible-kv-cache --no-async-scheduling \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail"}'
 ```
 
@@ -162,13 +181,14 @@ vllm serve Qwen/Qwen3-0.6B \
 Start a decoder instance that consumes KV caches:
 
 ```bash
-# 2nd GPU as decoder
-CUDA_VISIBLE_DEVICES=1 \
+# Four GPUs for decode
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
 UCX_NET_DEVICES=all \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5601 \
-vllm serve Qwen/Qwen3-0.6B \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 \
   --port 8200 \
-  --enforce-eager \
+  --tensor-parallel-size 4 --enable-expert-parallel \
+  --language-model-only --disable-extensible-kv-cache --no-async-scheduling \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail"}'
 ```
 
@@ -177,7 +197,7 @@ vllm serve Qwen/Qwen3-0.6B \
 Use a proxy server to route requests between prefiller and decoder:
 
 ```bash
-python tests/v1/kv_connector/nixl_integration/toy_proxy_server.py \
+.venv/bin/python tests/v1/kv_connector/nixl_integration/toy_proxy_server.py \
   --port 8192 \
   --prefiller-hosts localhost \
   --prefiller-ports 8100 \
@@ -322,7 +342,7 @@ Enable bidirectional KV transfer by setting `bidirectional_kv_xfer` in `kv_conne
 
 ```bash
 # Prefill instance
-vllm serve <MODEL> \
+nabla-vllm serve <MODEL> \
   --kv-transfer-config '{
     "kv_connector": "NixlConnector",
     "kv_role": "kv_producer",
@@ -332,7 +352,7 @@ vllm serve <MODEL> \
   }'
 
 # Decode instance
-vllm serve <MODEL> \
+nabla-vllm serve <MODEL> \
   --kv-transfer-config '{
     "kv_connector": "NixlConnector",
     "kv_role": "kv_consumer",
@@ -444,7 +464,7 @@ python benchmarks/multi_turn/benchmark_serving_multi_turn.py \
 VLLM_NIXL_SIDE_CHANNEL_HOST=${IP1} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
 UCX_NET_DEVICES=all \
-vllm serve Qwen/Qwen3-0.6B --port 8000 \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 --port 8000 \
   --tensor-parallel-size 8 \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail"}'
 
@@ -452,7 +472,7 @@ vllm serve Qwen/Qwen3-0.6B --port 8000 \
 VLLM_NIXL_SIDE_CHANNEL_HOST=${IP2} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
 UCX_NET_DEVICES=all \
-vllm serve Qwen/Qwen3-0.6B --port 8000 \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 --port 8000 \
   --tensor-parallel-size 8 \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail"}'
 ```
@@ -464,7 +484,7 @@ vllm serve Qwen/Qwen3-0.6B --port 8000 \
 VLLM_NIXL_SIDE_CHANNEL_HOST=${IP3} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
 UCX_NET_DEVICES=all \
-vllm serve Qwen/Qwen3-0.6B --port 8000 \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 --port 8000 \
   --tensor-parallel-size 8 \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail"}'
 
@@ -472,7 +492,7 @@ vllm serve Qwen/Qwen3-0.6B --port 8000 \
 VLLM_NIXL_SIDE_CHANNEL_HOST=${IP4} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
 UCX_NET_DEVICES=all \
-vllm serve Qwen/Qwen3-0.6B --port 8000 \
+nabla-vllm serve /models/Qwen3.8-Flash-Next-FP8 --port 8000 \
   --tensor-parallel-size 8 \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail"}'
 ```
@@ -480,7 +500,7 @@ vllm serve Qwen/Qwen3-0.6B --port 8000 \
 ### Proxy for Multiple Instances
 
 ```bash
-python tests/v1/kv_connector/nixl_integration/toy_proxy_server.py \
+.venv/bin/python tests/v1/kv_connector/nixl_integration/toy_proxy_server.py \
   --port 8192 \
   --prefiller-hosts ${IP1} ${IP2} \
   --prefiller-ports 8000 8000 \

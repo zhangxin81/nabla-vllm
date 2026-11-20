@@ -1,4 +1,4 @@
-# bytevllm downstream PR integration
+# nabla-vllm downstream PR integration
 
 The current integration uses upstream baseline
 `5a21c6c853bff525dbaa4cc06596e3c374599f85`. The original specialization used
@@ -23,7 +23,27 @@ unrelated history. It does not merge or modify the upstream PRs.
 | [#64846](https://github.com/vllm-project/vllm/pull/64846) | `c17f9ce00a52fa7b5ce89ff25b02e6bb30722b51` | PDL launches for packed GDN decode, sigmoid gate, gated norm and Triton MoE. Each waits before its first read; no early dependent trigger. Gated norm is moved into the shared GDN package and connected to Qwen4Exp outside compilation. |
 | [#64670](https://github.com/vllm-project/vllm/pull/64670) | `31c4f772dd375f4fd271b473688ce31f8e425adc` | Copy offloaded GDN warmup parameters to the cache device. Test a real Qwen GDN layer and retain the original CPU parameters. |
 
-The GDN overlap implementation from #64425 is retained. Qwen3.5's NVIDIA caller
+### Closure-migration source revisions
+
+These sources were adapted while moving the cache and model dependency closure.
+They are source references, not claims that every source branch was merged in full.
+
+| PR | Reviewed source head | Adaptation |
+| --- | --- | --- |
+| [#67756](https://github.com/vllm-project/vllm/pull/67756) | `1fa7a6fa767da17088d50804c9df611d23041d0c` | Keep capability and metadata inspection from creating inference CUDA contexts. |
+| [#67171](https://github.com/vllm-project/vllm/pull/67171) | `2058125f42144b7a4ccb9b8106aa9117ac9a9915` | Use compatible state groups to fill packed-cache stride padding. |
+| [#67173](https://github.com/vllm-project/vllm/pull/67173) | `e8197a70fa91e304abd8f7c9f62a37f1a6409116` | Keep token-slot caches at their native kernel block granularity. |
+| [#61461](https://github.com/vllm-project/vllm/pull/61461) | `f1bee0714be1f1741a953eddc8aa4a637ca7603e` | Retain SM90 small-batch mHC dispatch. |
+| [#66754](https://github.com/vllm-project/vllm/pull/66754) | `289b89a13ee431b01328dc502830f0ea45044907` | Delay sequence-parallel gather until after attention projection. |
+| [#67712](https://github.com/vllm-project/vllm/pull/67712) | `2806929ad924d6db3ebead0352e09e088f04cc01` | Reuse prefill chunk metadata. |
+| [#64661](https://github.com/vllm-project/vllm/pull/64661) | `899b088126c6aa8e4ed42f6363aac391a311d907` | Coalesce compatible covering regions with matching native stride and capacity. |
+| [#67634](https://github.com/vllm-project/vllm/pull/67634) | `c9ba596634f2ea9d3a23f9855e39affe251ef159` | Bypass unhelpful small-SM90 HCSP work. |
+| [#68440](https://github.com/vllm-project/vllm/pull/68440) | `483f44d178145c44fa2de6983447fd5a318d3141` | Fold compatible PLE/GDN groups and expose the transfer layout. |
+| [#68423](https://github.com/vllm-project/vllm/pull/68423) | `05a66f215ae438a6fb9ab9a8df2b573eda840db2` | Retain InstantTensor 0.2.3 and the shared checkpoint row-reader requirements. |
+| [#66045](https://github.com/vllm-project/vllm/pull/66045) | `5cc33a82d42b0d9928136fc00a22b9c23e9b82b7` | Keep target and draft expert placement distinct. |
+| [#60874](https://github.com/vllm-project/vllm/pull/60874) | `7d1205b456379705de6c70a56cd91aa68e00afa2` | Bound compressed-logit scratch storage for the DeepSeek V4.1 indexer. |
+
+The GDN overlap implementation from #64425 is retained. The retained Qwen NVIDIA caller
 enables it outside `torch.compile`; the layer restricts overlap to compatible
 cuBLAS projections, CUDA graph capture, and at most 256 tokens. LoRA and
 ubatching retain serial execution. Reapplying #42301's older unconditional
@@ -203,3 +223,55 @@ validate FP8 outputs and strided layouts, FlashMLA graph replay, DFlash context
 writes and acceptance, and IPC output equivalence, concurrency, cancellation,
 preemption, peer restart, block reuse, and transfer lifetime on the actual P/D
 configuration. H20/H100/B200 coverage and both target models remain necessary.
+
+## Final review and release gates
+
+The cache review identified and fixed allocation-order dependence, the missing
+writable GDN slot after an external import, null-region warmup, transfer
+registration generation ordering, and parameter-device warmup. The worker
+checks exercise native byte copies and zeroing. The stress test independently
+accounts for live bytes after 1,000 interleaved allocation/reference/free/eviction
+operations.
+
+The second review found a gated-norm row-tile mismatch and eager FLA device
+inspection on the metadata platform; both were corrected before the final
+model comparison. It also removed a Cohere-only router import and its unused
+model dependency, repaired the rendered model scope and NIXL protocol guide,
+and made distribution/CLI/snapshot identity match `nabla-vllm`. The `vllm`
+Python namespace and CLI alias remain so the existing CUDA and NIXL interfaces
+keep their names.
+
+On the final immutable `a74843081de800058ae80d8dac8483e7439057de` source, the
+cache, partial-prefix, deferred-free and checkpoint-splitting command passed
+**525 passed in 25.16s**:
+
+```bash
+PYTHONPATH=<candidate-source> VLLM_TARGET_DEVICE=empty HF_HUB_OFFLINE=1 \
+  .venv/bin/python -m pytest --confcutdir=<candidate-source>/tests/v1/core \
+  <candidate-source>/tests/v1/core/test_prefix_caching.py \
+  <candidate-source>/tests/v1/core/prefix_cache/test_partial_prefix_cache_primitives.py \
+  <candidate-source>/tests/v1/core/prefix_cache/test_partial_prefix_cache_hits.py \
+  <candidate-source>/tests/v1/core/test_deferred_block_free.py \
+  <candidate-source>/tests/v1/core/test_mamba_align_chunk_split.py -q
+```
+
+The benchmark dry run checks all 39 first-round cases, common seeds, greedy
+sampling, request counts and absence of writes. Renamed-package installation
+and both CLI aliases completed on the metadata platform; the version suite
+passed **13 passed in 1.37s** (`.venv/bin/python -m pytest --confcutdir=tests
+ tests/test_version.py -q`). GPU serving and throughput results are recorded in
+the [H100 baseline](../benchmarks/nabla-vllm/h100-4p4d-20261120.md), with their
+exact source revisions and remaining numerical/feature limitations.
+
+Community screening is pinned to the fetched source revisions. Proposals for
+other hardware, different quantization contracts, different connectors or
+parallel layouts, and incomplete speculative/batch-invariance stacks are not
+implicitly enabled. In particular, #65297/#66126 tune per-token/per-channel
+scaled GEMMs; the two tested Qwen checkpoints use dynamic 128x128 block FP8.
+#61121 requires common whole-row strides; the native arena's distinct group
+strides must keep independent regions. #62343 applies to short Triton/FLA
+prefills, while the measured Qwen setup selects FlashInfer prefill. #64161's
+large shared-block heuristic is bypassed by native page/state sizing.
+#64893/#64364 depend on DSpark and specialized decode, and #66236 shreds rows
+in pure TP rather than the measured TP4/EP4 layout. Their original measurements
+do not establish a gain for this combination.

@@ -13,6 +13,7 @@ from vllm.distributed.kv_events import (
 )
 from vllm.logger import init_logger
 from vllm.multimodal.utils import get_mm_features_in_window
+from vllm.utils.math_utils import cdiv
 from vllm.v1.core.cache_memory_arena import CacheMemoryArena
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
@@ -191,6 +192,9 @@ class BlockPool:
         self.block_stride_bytes = block_stride_bytes
         if memory_arena is not None:
             memory_arena.register_pool(self, block_stride_bytes)
+            first_slot = cdiv(memory_arena.memory.reserved, block_stride_bytes)
+            for block in self.blocks[1:first_slot]:
+                self.free_block_queue.remove(block)
 
     def get_cached_block(
         self, block_hash: BlockHash, kv_cache_group_ids: list[int]

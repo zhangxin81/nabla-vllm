@@ -3,12 +3,12 @@
 
 import argparse
 import asyncio
-import importlib.metadata
 import typing
 
 from vllm.entrypoints.cli.types import CLISubcommand
 from vllm.entrypoints.common.startup import VLLM_SUBCMD_PARSER_EPILOG
 from vllm.logger import init_logger
+from vllm.version import __version__
 
 if typing.TYPE_CHECKING:
     from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -27,9 +27,7 @@ class RunBatchSubcommand(CLISubcommand):
     def cmd(args: argparse.Namespace) -> None:
         from vllm.entrypoints.launchers.run_batch import main as run_batch_main
 
-        logger.info(
-            "vLLM batch processing API version %s", importlib.metadata.version("vllm")
-        )
+        logger.info("nabla-vllm batch processing API version %s", __version__)
         logger.info("args: %s", args)
 
         # Start the Prometheus metrics server.
