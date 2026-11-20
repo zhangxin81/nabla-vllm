@@ -207,6 +207,7 @@ def _fill_decode_swa_siblings(
     builder = siblings[0][0]
     num_tokens = metadata.num_decode_tokens
     assert metadata.num_prefill_tokens == 0
+    assert metadata.decode_swa_width == builder.window_size
     key = tuple(
         value
         for b, block_table, slot_mapping in siblings
@@ -510,7 +511,8 @@ class DeepseekV41ModelState(DefaultModelState):
                 builder = groups[0].get_metadata_builder() if len(groups) == 1 else None
                 if (
                     isinstance(builder, DeepseekSparseSWAMetadataBuilder)
-                    and builder.noncausal_index_width == builder.window_size
+                    and not builder.is_dspark
+                    and builder.max_image_tokens == 0
                 ):
                     by_spec[groups[0].kv_cache_spec].append(i)
             self._swa_siblings = [ids for ids in by_spec.values() if len(ids) > 1]
