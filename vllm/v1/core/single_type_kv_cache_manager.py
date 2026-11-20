@@ -2955,6 +2955,7 @@ class HiSparseSourceManager(FullAttentionManager):
             ),
             medium=MEDIUM_CPU,
             event_owner=device_pool,
+            prefix_index=device_pool.cached_block_hash_to_block.prefix_index,
         )
         self._null_block = self.block_pool.null_block
 

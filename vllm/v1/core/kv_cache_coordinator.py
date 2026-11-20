@@ -12,6 +12,7 @@ from vllm.v1.core.kv_cache_utils import (
     eagle_proof_margin,
     partial_hash_hits_enabled,
 )
+from vllm.v1.core.prefix_cache_index import PrefixCacheIndex
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
     FullAttentionManager,
@@ -120,6 +121,7 @@ class KVCacheCoordinator(ABC):
         self.scheduler_block_size = scheduler_block_size
         self.num_reprefillable_tokens = max(0, num_prefill_lookahead - 1)
 
+        self.prefix_cache_index = PrefixCacheIndex()
         self.block_pool = BlockPool(
             num_gpu_blocks=kv_cache_config.num_blocks,
             enable_caching=enable_caching,
@@ -127,6 +129,7 @@ class KVCacheCoordinator(ABC):
             enable_kv_cache_events=enable_kv_cache_events,
             metrics_collector=metrics_collector,
             num_hash_lookahead_tokens=num_hash_lookahead_tokens,
+            prefix_index=self.prefix_cache_index,
         )
 
         # KV cache group indices that get the EAGLE last-block drop.

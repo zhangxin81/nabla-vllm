@@ -13,7 +13,6 @@ from vllm.distributed.kv_events import (
 )
 from vllm.logger import init_logger
 from vllm.multimodal.utils import get_mm_features_in_window
-from vllm.utils.gc_utils import gc_untrack
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
     BlockHash,
@@ -30,6 +29,7 @@ from vllm.v1.core.kv_cache_utils import (
     resolve_block_hashes,
     to_event_extra_keys,
 )
+from vllm.v1.core.prefix_cache_index import PrefixCacheIndex
 from vllm.v1.request import Request
 
 logger = init_logger(__name__)
@@ -53,23 +53,32 @@ class BlockHashToBlockMap:
     dict of only bytes and ints, so cached blocks add nothing to each collection.
     """
 
-    def __init__(self, blocks: list[KVCacheBlock]):
+    def __init__(
+        self,
+        blocks: list[KVCacheBlock],
+        prefix_index: PrefixCacheIndex | None = None,
+    ):
         self._blocks = blocks
+        self.prefix_index = PrefixCacheIndex() if prefix_index is None else prefix_index
+        self._offset = self.prefix_index.register_pool(blocks)
         # Block id of one block per key.
         # Also untracked explicitly: Python 3.14+ no longer untracks dicts of
         # atomic values by itself.
-        self._cache: dict[BlockHashWithGroupId, int] = gc_untrack({})
+        self._cache = self.prefix_index.cache
         # All block ids, in insertion order, of keys cached by several blocks.
         # Kept apart so that `_cache` holds no containers.
-        self._dup_ids: dict[BlockHashWithGroupId, dict[int, None]] = {}
+        self._dup_ids = self.prefix_index.duplicate_ids
 
     def get_one_block(self, key: BlockHashWithGroupId) -> KVCacheBlock | None:
         """Gets any block with the given block hash key."""
         block_id = self._cache.get(key)
-        return None if block_id is None else self._blocks[block_id]
+        return None if block_id is None else self.prefix_index.blocks[block_id]
 
     def contain(self, key: BlockHashWithGroupId, block_id: int) -> bool:
-        """Checks whether the key maps to the given block ID."""
+        """Checks whether the key maps to the given pool-local block ID."""
+        if not 0 <= block_id < len(self._blocks):
+            return False
+        block_id += self._offset
         dup_ids = self._dup_ids.get(key)
         if dup_ids is not None:
             return block_id in dup_ids
@@ -77,31 +86,26 @@ class BlockHashToBlockMap:
 
     def insert(self, key: BlockHashWithGroupId, block: KVCacheBlock) -> None:
         """Inserts the KVCacheBlock to the cache"""
-        block_id = self._cache.setdefault(key, block.block_id)
-        if block_id != block.block_id:
-            self._dup_ids.setdefault(key, {block_id: None})[block.block_id] = None
+        if not 0 <= block.block_id < len(self._blocks) or (
+            block.pool is not None and self._blocks[block.block_id] is not block
+        ):
+            raise ValueError("Cannot index a block owned by another pool")
+        index_id = self._offset + block.block_id
+        block_id = self._cache.setdefault(key, index_id)
+        if block_id != index_id:
+            self._dup_ids.setdefault(key, {block_id: None})[index_id] = None
 
     def pop(self, key: BlockHashWithGroupId, block_id: int) -> KVCacheBlock | None:
         """Pops block_id from the blocks cached under key, if it is there."""
-        dup_ids = self._dup_ids.get(key)
-        if dup_ids is None:
-            if self._cache.get(key) != block_id:
-                return None
-            del self._cache[key]
-        else:
-            if dup_ids.pop(block_id, False) is False:
-                return None
-            self._cache[key] = next(iter(dup_ids))
-            if len(dup_ids) == 1:
-                del self._dup_ids[key]
-        return self._blocks[block_id]
+        if not 0 <= block_id < len(self._blocks):
+            return None
+        return self.prefix_index.pop(key, self._offset + block_id)
 
     def __len__(self) -> int:
         return len(self._cache)
 
     def clear(self) -> None:
-        self._cache.clear()
-        self._dup_ids.clear()
+        self.prefix_index.clear_pool(self._offset, len(self._blocks))
 
 
 class BlockPool:
@@ -123,6 +127,7 @@ class BlockPool:
         metrics_collector: Optional metrics collector for tracking block residency.
         num_hash_lookahead_tokens: Tokens after each block covered by its hash.
         medium: Storage medium reported in KV cache events.
+        prefix_index: Prefix lookup shared with other physical resource pools.
 
     """
 
@@ -135,6 +140,7 @@ class BlockPool:
         metrics_collector: KVCacheMetricsCollector | None = None,
         num_hash_lookahead_tokens: int = 0,
         medium: str = MEDIUM_GPU,
+        prefix_index: PrefixCacheIndex | None = None,
     ):
         assert isinstance(num_gpu_blocks, int) and num_gpu_blocks > 0
         self.num_gpu_blocks = num_gpu_blocks
@@ -154,7 +160,7 @@ class BlockPool:
 
         # Cache for block lookup
         self.cached_block_hash_to_block: BlockHashToBlockMap = BlockHashToBlockMap(
-            self.blocks
+            self.blocks, prefix_index
         )
         self.cached_block_hashes_by_block: dict[int, set[BlockHashWithGroupId]] = {}
 
@@ -782,6 +788,12 @@ class BlockPool:
         """
         for block in blocks:
             if block.is_null:
+                continue
+            if block.pool is not None and block.pool is not self._weak_self:
+                owner = block.pool()
+                if owner is None:
+                    raise RuntimeError("Prefix-cache block's pool no longer exists")
+                owner.touch((block,))
                 continue
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.

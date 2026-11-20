@@ -59,6 +59,7 @@ from vllm.v1.core.kv_cache_utils import (
     init_none_hash,
     make_block_hash_with_group_id,
 )
+from vllm.v1.core.prefix_cache_index import PrefixCacheIndex
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.single_type_kv_cache_manager import (
@@ -5971,6 +5972,64 @@ def test_hybrid_mamba_retention_lookahead_keeps_last_prompt_boundary():
     computed_blocks, num_computed_tokens, _ = manager.get_computed_blocks(req1)
     assert num_computed_tokens == 4 * block_size
     assert [len(blocks) for blocks in computed_blocks.blocks] == [4, 4]
+
+
+def test_shared_prefix_index_preserves_pool_local_ids_and_eviction():
+    index = PrefixCacheIndex()
+    kv_pool = BlockPool(3, True, 16, prefix_index=index)
+    state_pool = BlockPool(2, True, 16, prefix_index=index)
+    request = make_request("shared", list(range(33)), 16, sha256)
+    kv_blocks = kv_pool.get_new_blocks(2)
+    state_blocks = state_pool.get_new_blocks(1)
+    assert kv_blocks[0].block_id == state_blocks[0].block_id == 1
+
+    kv_pool.cache_full_blocks(request, kv_blocks, 0, 2, 16, 0)
+    # A state slot represents the checkpoint at token 32, not a token page.
+    state_pool.cache_full_blocks(request, state_blocks, 0, 1, 32, 1)
+    kv_pool.free_blocks(kv_blocks)
+    state_pool.free_blocks(state_blocks)
+
+    hit = kv_pool.get_cached_block(request.block_hashes[1], [0, 1])
+    assert hit is not None
+    assert hit[0] is kv_blocks[1] and hit[1] is state_blocks[0]
+    kv_pool.touch(hit)
+    assert kv_pool.get_num_free_blocks() == 1
+    assert state_pool.get_num_free_blocks() == 0
+    kv_pool.free_blocks(hit)
+    state_pool.touch(state_blocks)
+    assert kv_pool.reset_prefix_cache()
+    assert kv_pool.get_cached_block(request.block_hashes[1], [0]) is None
+    state_hit = state_pool.get_cached_block(request.block_hashes[1], [1])
+    assert state_hit is not None and state_hit[0] is state_blocks[0]
+    assert state_pool.get_num_free_blocks() == 0
+    state_pool.free_blocks(state_blocks)
+    assert state_pool.reset_prefix_cache()
+    assert len(index) == 0
+    assert not gc.is_tracked(index.cache)
+
+
+def test_shared_prefix_index_keeps_duplicate_owners_on_pool_reset():
+    index = PrefixCacheIndex()
+    first = BlockPool(2, True, 16, prefix_index=index)
+    second = BlockPool(2, True, 16, prefix_index=index)
+    request = make_request("duplicate", list(range(17)), 16, sha256)
+    a = first.get_new_blocks(1)
+    b = second.get_new_blocks(1)
+    first.cache_full_blocks(request, a, 0, 1, 16, 0)
+    second.cache_full_blocks(request, b, 0, 1, 16, 0)
+    first.free_blocks(a)
+    second.free_blocks(b)
+
+    assert first.reset_prefix_cache()
+    hit = second.get_cached_block(request.block_hashes[0], [0])
+    assert hit is not None and hit[0] is b[0]
+    # A local ID outside first's range must not remove a second-pool entry.
+    key = make_block_hash_with_group_id(request.block_hashes[0], 0)
+    assert first.cached_block_hash_to_block.pop(key, 3) is None
+    hit = second.get_cached_block(request.block_hashes[0], [0])
+    assert hit is not None and hit[0] is b[0]
+    with pytest.raises(ValueError, match="another pool"):
+        first.cached_block_hash_to_block.insert(key, b[0])
 
 
 def test_block_lookup_cache_single_block_per_key():
