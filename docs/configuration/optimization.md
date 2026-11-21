@@ -73,7 +73,7 @@ vLLM uses for weights, activations and the KV cache: it defaults to 0.92, and a 
 value gives a larger KV cache. vLLM falls back, for example, with
 `--no-enable-extensible-kv-cache`, `--kv-cache-memory` or `--num-gpu-blocks-override`,
 with KV connectors that share or register the KV cache in ways it doesn't support
-(LMCache's multi-process connector; NIXL, Mooncake or MoRIIO on ROCm), and with NIXL
+(LMCache's multi-process connector; NIXL or Mooncake on ROCm), and with NIXL
 within a host that has no IMEX channel.
 
 ## Preemption

@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import product as iprod
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -266,7 +266,8 @@ class KVBlockZeroer:
             return
         if self.arena_unit_view is not None:
             assert all(isinstance(item, tuple) for item in block_ids)
-            max_bytes = max(size for _, size in block_ids)
+            byte_ranges = cast(list[tuple[int, int]], block_ids)
+            max_bytes = max(size for _, size in byte_ranges)
             block = 1024
             _zero_cache_byte_ranges_kernel[
                 (len(block_ids), cdiv(max_bytes, block * 4))
@@ -736,16 +737,7 @@ def layer_kernel_block_size(
 
 
 def _allocate_kv_cache_buffer(raw_size: int, device: torch.device) -> torch.Tensor:
-    if current_platform.is_rocm():
-        # Pad to the page granularity MoRIIO needs to register the shared
-        # backing as a single RDMA memory region. Other platforms keep the
-        # exact-size allocation (see #53974), so anything reading
-        # storage.nbytes() has to tolerate the tail on ROCm alone.
-        page_size = 4096
-        buf_size = ((raw_size + page_size - 1) // page_size) * page_size
-    else:
-        buf_size = raw_size
-    return torch.zeros(buf_size, dtype=torch.int8, device=device)
+    return torch.zeros(raw_size, dtype=torch.int8, device=device)
 
 
 def prepare_kernel_block_sizes(

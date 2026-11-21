@@ -3404,7 +3404,7 @@ class VllmConfig:
             unsupported = (
                 "on ROCm, UCX and RDMA cannot yet register driver-mapped memory, "
                 "which connectors that register the KV cache (e.g. NIXL, Mooncake, "
-                "MoRIIO, UMBP) require"
+                "UMBP) require"
             )
         exports_fd = KVCacheAccess.EXPORTS_FD in kv_cache_access
         if exports_fd and (requested is False or unsupported is not None):

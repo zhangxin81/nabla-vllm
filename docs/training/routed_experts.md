@@ -18,7 +18,7 @@ Startup fails with a `ValueError` unless:
 
 Rejected at startup: adaptive speculative verification, PP > 1 and DCP/PCP > 1. Regular speculative decoding works.
 
-KV connectors are not rejected, including the prefill/decode ones (`NixlConnector`, `MoRIIOConnector`, `MooncakeConnector`, ...). In a prefill/decode deployment, however, the decode engine holds no rows for the KV the prefill engine computed. It accepts that KV only up to `routed_experts_prompt_start` and computes the rest of the prompt again, so the output is correct but the prefill work past that position is lost.
+KV connectors are not rejected, including the prefill/decode ones (`NixlConnector`, `MooncakeConnector`, ...). In a prefill/decode deployment, however, the decode engine holds no rows for the KV the prefill engine computed. It accepts that KV only up to `routed_experts_prompt_start` and computes the rest of the prompt again, so the output is correct but the prefill work past that position is lost.
 
 ### Backend row restoration
 
