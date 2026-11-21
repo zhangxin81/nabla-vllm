@@ -71,6 +71,13 @@ DeepSeek 的高并发 decode 存在吞吐回退，已针对调度和分配布局
 新矩阵两侧均设置 4 个 renderer worker，历史结果保留原配置。
 缓存分配的 CPU 优化先以原来的 1 worker 配置单独复测。
 
+新运行时的 Qwen 历史 FP8 首轮已完成 117 个有效点。
+同点吞吐比的中位数为 NIXL 1.024、CUDA IPC 1.034。
+IPC 在 65536／128、并发 8 的点比上游低 11.3%，长输出高并发也有回退；
+第二／三轮尚未完成。这些单轮数据用于后续复测和迭代，不代表生产流量收益。
+完整数据见 [Qwen 首轮 CSV](docs/benchmarks/nabla-vllm/qwen-first-round.csv)
+和 [基线记录](docs/benchmarks/nabla-vllm/h100-4p4d-20261120.md)。
+
 合成性能负载使用固定 dataset seed、`temperature=0` 和 `ignore_eos`。
 主矩阵关闭 prefix caching，共享前缀另测。
 吞吐饱和点需要与延迟一起阅读，低样本量的 p95／p99 不作为 SLA 估计。
