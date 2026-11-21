@@ -78,9 +78,9 @@ configuration rules.
 
 ## Validation scope
 
-The results below describe the original integration. The new native arena and
-combined PR adaptations are being validated separately on H100; they do not
-inherit a passing result from these historical runs.
+The results below describe the original integration. The combined runtime
+has separate H100 serving evidence in the final baseline; historical passes
+apply only to the revisions and paths named here.
 
 Host validation uses the existing uv-managed Python environment and
 `VLLM_TARGET_DEVICE=empty`. This mode has no inference backend.
@@ -243,7 +243,7 @@ and made distribution/CLI/snapshot identity match `nabla-vllm`. The `vllm`
 Python namespace and CLI alias remain so the existing CUDA and NIXL interfaces
 keep their names.
 
-On the final immutable `a74843081de800058ae80d8dac8483e7439057de` source, the
+On the earlier immutable `a74843081de800058ae80d8dac8483e7439057de` source, the
 cache, partial-prefix, deferred-free and checkpoint-splitting command passed
 **525 passed in 25.16s**:
 
@@ -359,3 +359,37 @@ to exercise noncontiguous IDs after clustering, retaining all 320-byte
 disjointness, zeroing, restore and neighbor checks: **19 passed in 9.75s**.
 The H100 baseline records the paired serving diagnosis separately from the
 final matrix. Historical source checks remain historical evidence.
+
+## v0.1.0 measured runtime
+
+The main throughput matrix is fixed at `b1e3f20751cd7cd602c8d7df896bd33a63e781f0`:
+801 valid cases and 58,248 measured requests. Candidate prefix runs were
+remeasured at `0d42cd781e6330ced5f4d7807308abbb8351d2fe` after repairing the
+zero-hit changed-suffix replay. That matrix contains 162 cases, 4,752 measured
+requests and nine final direct-prefill probes. Upstream and the common client
+remain at `8e45c458f619dbabff879c0f53c58fd9f296e983`. The historical Qwen upstream
+prefix arm was resumed unchanged; the failed b1 candidate prefix arm is excluded.
+
+The sparse native policy now retains completed prefill chunk boundaries in
+both state and sliding-window groups. The two-variant base regression failed:
+**2 failed, 255 deselected in 19.51s**. On frozen 0d42cd781e, the cache,
+partial-prefix, deferred-free and checkpoint-splitting command above passed:
+**531 passed in 24.72s**. Final candidate Qwen probes reused 8,192 of 8,448 queried
+tokens; upstream Qwen reused 8,000. All three DeepSeek paths reused 8,192.
+No throughput row or exact-token assertion was weakened to obtain these results.
+
+The measured runtime's C/CUDA sources and CMake pins are unchanged from b1.
+Twelve native libraries and 969 CMake-installed dependency-package files were
+reused with identical hashes. A first startup missing those generated packages
+failed before measurements and is retained as an environment failure. Later
+project-identity and data commits do not alter the frozen runtime.
+
+The complete result includes negative evidence. DeepSeek cache-enabled unique
+8448/128 input/output at concurrency 32 has a NIXL three-round mean throughput
+ratio of **0.8408**; IPC is **0.9639**. Selected NIXL descriptors grew 7.55x for
+similar transferred bytes in the third run. Preparation/control costs require
+further profiling; this stable regression remains unresolved. Main-matrix
+DeepSeek exact-token checks also remain failed (18/24 mismatches per candidate
+arm, with upstream repeat instability reproduced). No quality evaluation was
+performed. The final baseline records source boundaries, latency, variability,
+absolute throughput, raw requests and the retained failures.
