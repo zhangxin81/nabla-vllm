@@ -7046,6 +7046,42 @@ def test_empty_arena_plan_preserves_live_and_cached_byte_ownership():
     arena.allocation_plan = None
 
 
+def test_mixed_cache_families_borrow_free_bytes_before_rejecting_growth():
+    """A growing family must use idle bytes beyond its initial placement area."""
+    from vllm.v1.core.cache_memory_arena import CacheMemoryArena
+
+    strides = (114048, 95040, 116928, 98304)
+    counts = (20, 8, 16, 1)
+    capacity = 640 * 1024**2
+    arena = CacheMemoryArena(capacity, strides)
+    pools = tuple(
+        BlockPool(
+            capacity // stride,
+            False,
+            1,
+            memory_arena=arena,
+            block_stride_bytes=stride,
+        )
+        for stride in strides
+    )
+    leases = [[] for _ in pools]
+    for _ in range(128):
+        assert arena.can_allocate(list(zip(pools, counts)), prepare=True)
+        for pool, count, blocks in zip(pools, counts, leases):
+            blocks.extend(pool.get_new_blocks(count))
+        arena.allocation_plan = None
+
+    growth_pool = pools[1]
+    while arena.can_allocate([(growth_pool, 1)], prepare=True):
+        leases[1].extend(growth_pool.get_new_blocks(1))
+        arena.allocation_plan = None
+    # Only alignment fragments may remain, not a separate family quota.
+    assert arena.memory.free_bytes < 2 * len(strides) * max(strides)
+    for pool, blocks in zip(pools, leases):
+        pool.free_blocks(blocks)
+    assert arena.get_usage() == 0
+
+
 def _native_cache_manager():
     from tests.v1.core.utils import full_layer, mamba_layer
     from vllm.v1.kv_cache_interface import KVCacheGroup

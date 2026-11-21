@@ -27,12 +27,14 @@ class FreeByteRanges:
         self.ranges = [(reserved, capacity)] if reserved < capacity else []
         self.allocated: set[tuple[int, int]] = set()
         self._free_slot_counts: dict[int, int] = {}
+        self.allocation_cursors: dict[int, int] = {}
 
     def copy(self, include_ownership: bool = True) -> "FreeByteRanges":
         clone = FreeByteRanges(self.capacity, self.reserved)
         clone.ranges = self.ranges.copy()
         clone.allocated = self.allocated.copy() if include_ownership else set()
         clone.free_bytes = self.free_bytes
+        clone.allocation_cursors = self.allocation_cursors.copy()
         if include_ownership:
             clone._free_slot_counts = self._free_slot_counts.copy()
         return clone
@@ -104,6 +106,7 @@ class CacheMemoryArena:
     Cached slots with no readers may be evicted by an overlapping allocation
     from another pool. Live references, including copies and transfers, reserve
     their full backing range. No KV/state ratio is reserved in advance.
+    Initial needs guide contiguous placement while every pool shares free bytes.
     """
 
     def __init__(self, capacity: int, strides: Sequence[int]) -> None:
@@ -131,6 +134,8 @@ class CacheMemoryArena:
     def acquire(self, block: "KVCacheBlock", stride: int) -> None:
         start = block.block_id * stride
         self.memory.reserve(start, stride)
+        if block.block_hash is None:
+            self.memory.allocation_cursors[stride] = start + stride
         # A write through one view invalidates every cached overlapping view.
         for other_stride in self.pools:
             if other_stride == stride:
@@ -156,6 +161,8 @@ class CacheMemoryArena:
 
     def release(self, block: "KVCacheBlock", stride: int) -> None:
         self.memory.release(block.block_id * stride, stride)
+        if not self.memory.allocated:
+            self.memory.allocation_cursors.clear()
 
     def select_blocks(
         self, pool: "BlockPool", count: int, memory: FreeByteRanges | None = None
@@ -169,23 +176,32 @@ class CacheMemoryArena:
         current = pool.free_block_queue.fake_free_list_head.next_free_block
         tail = pool.free_block_queue.fake_free_list_tail
         while len(selected) < count:
-            # Keep the queue's LRU order when its head is available. Bound the
-            # scan when another resource family owns a large overlapping region.
             block = None
-            for _ in range(32):
-                if current is None or current is tail:
-                    break
-                candidate = current
-                current = current.next_free_block
-                if memory.contains(candidate.block_id * stride, stride):
+            cursor = memory.allocation_cursors.get(stride)
+            if cursor is not None and memory.contains(cursor, stride):
+                candidate = pool.blocks[cursor // stride]
+                if (
+                    candidate.block_hash is None
+                    and candidate.block_id not in pool._reuse_watchers
+                ):
                     block = candidate
-                    break
+            if block is None:
+                # Preserve cached-slot LRU order and bound cross-family scans.
+                for _ in range(32):
+                    if current is None or current is tail:
+                        break
+                    candidate = current
+                    current = current.next_free_block
+                    if memory.contains(candidate.block_id * stride, stride):
+                        block = candidate
+                        break
             if block is None:
                 start = memory.first_fit(stride)
                 if start is None:
                     return None
                 block = pool.blocks[start // stride]
             memory.reserve(block.block_id * stride, stride)
+            memory.allocation_cursors[stride] = (block.block_id + 1) * stride
             selected.append(block)
         return selected
 
@@ -213,6 +229,22 @@ class CacheMemoryArena:
             memory.reserve(
                 block.block_id * pool.block_stride_bytes, pool.block_stride_bytes
             )
+        if not memory.allocation_cursors:
+            weights: dict[int, int] = {}
+            for pool, count in needs:
+                if count > 0:
+                    stride = pool.block_stride_bytes
+                    weights[stride] = weights.get(stride, 0) + count * stride
+            if len(weights) > 1:
+                total = sum(weights.values())
+                cumulative = 0
+                for stride in sorted(weights, reverse=True):
+                    memory.allocation_cursors[stride] = round_up(
+                        memory.reserved
+                        + (memory.capacity - memory.reserved) * cumulative // total,
+                        stride,
+                    )
+                    cumulative += weights[stride]
         plan: dict[BlockPool, list[KVCacheBlock]] = {}
         # Reserve large state holes before smaller token pages can split them.
         for pool, count in sorted(
