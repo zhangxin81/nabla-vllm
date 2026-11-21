@@ -507,6 +507,8 @@ steps:
   device: cpu-small
   source_file_dependencies:
   - vllm/models/qwen4_exp/
+  - vllm/config/model.py
+  - vllm/engine/arg_utils.py
   - vllm/config/compilation.py
   - vllm/v1/attention/backends/short_conv_attn.py
   - tests/models/qwen4_exp/

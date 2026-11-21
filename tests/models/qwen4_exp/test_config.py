@@ -12,6 +12,7 @@ from transformers import Qwen4ExpConfig, Qwen4ExpTextConfig
 
 from vllm.config import CacheConfig, ParallelConfig
 from vllm.config.speculative import SpeculativeConfig
+from vllm.engine.arg_utils import EngineArgs
 from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
     should_ignore_layer,
 )
@@ -54,6 +55,26 @@ def _text_config(**kwargs) -> Qwen4ExpTextConfig:
     }
     values.update(kwargs)
     return Qwen4ExpTextConfig(**values)
+
+
+@pytest.mark.parametrize("workers, expected", [(None, 4), (1, 1), (8, 8)])
+def test_renderer_workers_resolve_for_target_generation(tmp_path, workers, expected):
+    """Qwen generation parallelizes rendering while respecting an explicit size."""
+    config = Qwen4ExpConfig(
+        architectures=["Qwen4ExpForConditionalGeneration"],
+        text_config=_text_config(ple_layer_ids=[]),
+    )
+    config.save_pretrained(tmp_path)
+    worker_args = {} if workers is None else {"renderer_num_workers": workers}
+    args = EngineArgs(
+        model=str(tmp_path),
+        tokenizer_mode="skip",
+        max_model_len=128,
+        language_model_only=True,
+        **worker_args,
+    )
+    model_config = args.create_model_config()
+    assert model_config.renderer_num_workers == expected
 
 
 def test_moe_sp_rejects_pipeline_parallel() -> None:

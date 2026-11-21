@@ -432,12 +432,15 @@ class ModelConfig:
     definitions"""
     io_processor_plugin: str | None = None
     """IOProcessor plugin name to load at model startup"""
-    renderer_num_workers: int = 1
+    renderer_num_workers: int | None = None
     """Number of worker threads in the renderer thread pool. The pool is
     consumed by the async renderer path (e.g. the OpenAI-compatible API
     server started by `vllm serve`) to parallelize tokenization, chat
     template rendering, and multimodal preprocessing across concurrent
     requests.
+
+    If unset, uses 4 workers for generation and 1 for pooling. The offline
+    `LLM` entrypoint defaults to 1 worker. Explicit values take precedence.
 
     The offline `LLM` entrypoint uses the synchronous renderer path and
     processes prompts (including multimodal preprocessing) serially, so
@@ -735,6 +738,8 @@ class ModelConfig:
         self.runner_type = self._get_runner_type(
             architectures, self.runner, self.convert
         )
+        if self.renderer_num_workers is None:
+            self.renderer_num_workers = 1 if self.runner_type == "pooling" else 4
         self.convert_type = self._get_convert_type(
             architectures, self.runner_type, self.convert
         )

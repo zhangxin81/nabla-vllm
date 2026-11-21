@@ -302,6 +302,9 @@ class LLM(
                 "'examples/features/data_parallel/data_parallel_offline.py'."
             )
 
+        if kwargs.get("renderer_num_workers") is None:
+            kwargs["renderer_num_workers"] = 1
+
         engine_args = EngineArgs(
             model=model,
             runner=runner,
@@ -372,7 +375,12 @@ class LLM(
         # path; the synchronous `LLM` entrypoint runs multimodal
         # preprocessing serially. Warn so the setting is not a silent
         # no-op. See vllm-project/vllm#42901.
-        if self.model_config.renderer_num_workers > 1 and self.runner_type != "pooling":
+        renderer_num_workers = self.model_config.renderer_num_workers
+        if (
+            renderer_num_workers is not None
+            and renderer_num_workers > 1
+            and self.runner_type != "pooling"
+        ):
             logger.warning_once(
                 "`renderer_num_workers=%d` was set, but the offline `LLM` "
                 "entrypoint uses the synchronous renderer path and runs "
