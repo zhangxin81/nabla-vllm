@@ -1,7 +1,7 @@
 # nabla-vllm downstream PR integration
 
 The current integration uses upstream baseline
-`5a21c6c853bff525dbaa4cc06596e3c374599f85`. The original specialization used
+`8e45c458f619dbabff879c0f53c58fd9f296e983`. The original specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`. Source PRs are pinned
 below so later upstream updates can be compared without importing an old branch's
 unrelated history. It does not merge or modify the upstream PRs.
@@ -22,6 +22,8 @@ unrelated history. It does not merge or modify the upstream PRs.
 | [#68856](https://github.com/vllm-project/vllm/pull/68856) | `4c1896978a9173f4a9918eedf2ca7be345c7bc0c` | Preserve the existing SM90 router tuning and add an H100 CI job for its correctness suite. |
 | [#64846](https://github.com/vllm-project/vllm/pull/64846) | `c17f9ce00a52fa7b5ce89ff25b02e6bb30722b51` | PDL launches for packed GDN decode, sigmoid gate, gated norm and Triton MoE. Each waits before its first read; no early dependent trigger. Gated norm is moved into the shared GDN package and connected to Qwen4Exp outside compilation. |
 | [#64670](https://github.com/vllm-project/vllm/pull/64670) | `31c4f772dd375f4fd271b473688ce31f8e425adc` | Copy offloaded GDN warmup parameters to the cache device. Test a real Qwen GDN layer and retain the original CPU parameters. |
+| [#69041](https://github.com/vllm-project/vllm/pull/69041) | `0230b05c3afa0498ea46d9e0df5dd055046804fc` | Default asynchronous generation rendering to four workers; preserve one for offline `LLM`, pooling and explicit overrides. `EngineArgs` mirrors the owning `ModelConfig` default. |
+| [#69023](https://github.com/vllm-project/vllm/pull/69023) | `0d69deb811589538cd331157eface431993c47da` | Read the DSpark draft's native MegaMoE flag from its first FFN layer, matching the weight loader. Specialized DSpark remains disabled in the H100 serving comparison. |
 
 ### Closure-migration source revisions
 
@@ -268,11 +270,13 @@ other hardware, different quantization contracts, different connectors or
 parallel layouts, and incomplete speculative/batch-invariance stacks are not
 implicitly enabled. In particular, #65297/#66126 tune per-token/per-channel
 scaled GEMMs; the two tested Qwen checkpoints use dynamic 128x128 block FP8.
-# 61121 requires common whole-row strides; the native arena's distinct group
+
+PR #61121 requires common whole-row strides; the native arena's distinct group
 strides must keep independent regions. #62343 applies to short Triton/FLA
 prefills, while the measured Qwen setup selects FlashInfer prefill. #64161's
 large shared-block heuristic is bypassed by native page/state sizing.
-# 64893/#64364 depend on DSpark and specialized decode, and #66236 partitions rows
+
+PRs #64893/#64364 depend on DSpark and specialized decode, and #66236 partitions rows
 in pure TP rather than the measured TP4/EP4 layout. Their original measurements
 do not establish a gain for this combination.
 
@@ -290,3 +294,68 @@ The arena also removes the permanently reserved null byte region from each
 native pool's free queue, avoiding repeated scans of unallocatable virtual IDs.
 The native admission/reference/eviction regressions passed after this change:
 **13 passed, 238 deselected in 11.94s**.
+
+Additional source-contract checks distinguish proposals from changes active in
+the measured runtime. PR #57235 changes the retired MRV1 runner and Qwen3.5;
+the retained MRV2 runner has a separate batch-sharded local-logit implementation
+and does not consume that PR's `get_top_tokens` contract.
+PR #63329's grouped Humming WO-A implementation targets an older projection
+contract; the current V4.1 projection calls `grouped_forward`.
+PR #68291 widens Mega Gate's hardware gate only for explicitly selected native
+MegaMoE backends. PRs #56982 and #63516 change SM100 block-FP8 dispatch, requiring
+Blackwell validation before their original measurements can support a claim
+for this tree. None of these source changes is treated as a measured H100
+TP4/EP4 improvement merely from its title.
+
+The supplemental community scan reviewed PRs updated since 2026-11-20.
+[#69008](https://github.com/vllm-project/vllm/pull/69008), source
+`217ae8fefeee535a5df14014e5002971f95f5b35`, changes mixed DRAM/VRAM
+HiSparse MLA/Mamba transfers. The measured target caches are all in VRAM;
+Engram CPU weight offload does not create a host KV region. The patch is not
+applied to the native independent-capacity descriptor implementation without
+an applicable mixed-memory transfer validation.
+[#68908](https://github.com/vllm-project/vllm/pull/68908), source
+`83807439fa5dbb892ea60be69c23ad21df0ec908`, changes partial-tail accounting
+in `OffloadingConnector`, outside the selected NIXL serving path. Neither PR
+is counted as an integrated or measured improvement.
+
+The renderer regression uses a real saved Qwen config and `EngineArgs` rather
+than a replaced constructor. Its unset-default assertion failed on the
+pre-change configuration: **1 failed, 2 passed, 12 deselected in 37.03s**.
+With the default adaptation: **3 passed, 12 deselected in 35.90s**. The Mac
+attempt stopped at collection because `torchvision` was absent; the results
+above are from the Linux environment. The final controlled serving comparison
+sets `--renderer-num-workers 4` on both upstream and downstream. Historical
+renderer-one diagnostics retain their original configuration and provenance.
+The existing DSpark end-to-end regression requires four SM103 GPUs; H100
+results do not validate that specialized path.
+
+The actual offline entrypoints were also validated on H100 with a small
+two-layer Qwen GDN/QSA model and dummy weights. `LLM` resolved the default to
+one worker; `LLM.from_engine_args` also resolved its unset value to one; an
+explicit eight remained eight. Each generated one requested token. Initial
+validation-only configuration errors (`tokenizer_mode=skip` selecting an
+unregistered renderer, and an unset GDN output gate) were corrected; their
+logs remain separate. These checks establish entrypoint behavior, not quality.
+
+The subsequent ROCm closure removal deletes MoRIIO registration, runtime,
+proxy, tests and AMD disaggregation jobs (45 files, 21,833 deleted lines).
+NIXL pull/push resolution and exact zeroed CPU buffer sizes 0/1/4095/4096/4097
+were checked through real objects. Native byte-copy/zeroing GPU tests passed:
+**4 passed, 83 deselected in 22.56s**. The original contributor credits remain.
+
+The coordinator's empty-allocation path preserves full byte reservations for
+every allocation and prefix hit. The existing real manager regression now
+also checks a page-internal continuation before the next page/state boundary.
+On frozen `2f988fa77a557eba6e1eab57586c2708bbdbc844`, the full cache suites
+passed **528 passed in 26.59s**. Real serving traces and continuing performance
+measurements are recorded in the H100 baseline; no unmeasured gain is claimed.
+
+The subsequent native placement change `b1e3f20751` uses soft per-stride address
+cursors without reserving family quotas. A growing family can still borrow
+the shared free budget. The complete cache suites passed **529 passed in
+24.50s**. The forward byte-ownership test now uses a mixed decode/prefill shape
+to exercise noncontiguous IDs after clustering, retaining all 320-byte
+disjointness, zeroing, restore and neighbor checks: **19 passed in 9.75s**.
+The H100 baseline records the paired serving diagnosis separately from the
+final matrix. Historical source checks remain historical evidence.

@@ -35,7 +35,7 @@ checkpoint 管理，但不引入 SGLang 运行时依赖。
 
 | 工作 | 状态 |
 | --- | --- |
-| CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现；保留 NVIDIA 架构选择 |
+| CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现与 MoRIIO 的 ROCm P/D 实现；保留 NVIDIA 架构选择 |
 | 公共前缀索引 | `PrefixCacheIndex` 已接入 coordinator 和物理 `BlockPool`，保留池内 ID 与 owner 引用 |
 | 独立 state slot 和统一字节预算 | 已接入准入、分配、runner、清零、复制和 NIXL 续写；组合服务验证进行中 |
 | 模型与内核依赖裁剪 | 已删除无关模型和后端实现，保留两个模型及 draft 的依赖闭包 |
@@ -50,18 +50,26 @@ Attention page 与 GDN state slot 已按各自的原生 stride 计价，
 
 最新实验为 **8× H100 80GB，4P4D，两侧 TP=4／EP=4**。
 Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
-比较最新上游 vLLM、nabla-vllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 nabla-vllm。
+比较固定源码的上游 vLLM、nabla-vllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 nabla-vllm。
 
 测试分别记录以下权重，避免混合不同 checkpoint 的结果：
 
 - Qwen3.8-Flash-Next-FP8（历史权重）。
-- DeepSeek-V4.1-Flash-3。
+- DeepSeek-V4.1-Flash。
 - Qwen3.8-Flash-Next-FP8（补充权重）。
 
 [H100 基线记录](docs/benchmarks/nabla-vllm/h100-4p4d-20261120.md)
 包含输入输出矩阵、吞吐、TTFT、TPOT、实际请求长度和验证边界。
 每份基线固定源码 SHA、权重指纹、依赖、并行方式、内核选择和采样参数，
 并保留可比较的 CSV、图表和复现命令。
+
+历史 Qwen 和 DeepSeek 的首轮已完成 234 个有效测试点。Qwen 多数点持平或略有提升，
+DeepSeek 的高并发 decode 存在吞吐回退，已针对调度和分配布局修复并开始完整复测。补充权重复测、第二／三轮和
+共享前缀实验尚未完成；当前结果不构成 v0.1 的整体性能结论。
+
+新运行时固定为 `b1e3f20751`，上游固定为 `8e45c458f6`。
+新矩阵两侧均设置 4 个 renderer worker，历史结果保留原配置。
+缓存分配的 CPU 优化先以原来的 1 worker 配置单独复测。
 
 合成性能负载使用固定 dataset seed、`temperature=0` 和 `ignore_eos`。
 主矩阵关闭 prefix caching，共享前缀另测。
@@ -70,7 +78,7 @@ Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
 
 ## 开发与运行
 
-发行包和主要 CLI 为 `nabla-vllm`，Python 导入路径为 `vllm`，保留 `vllm` CLI 别名。
+项目包名和主要 CLI 为 `nabla-vllm`，Python 导入路径为 `vllm`，保留 `vllm` CLI 别名。
 使用 `uv` 管理环境和依赖：
 
 ```bash
