@@ -15,10 +15,18 @@ steps:
     - vllm/models/deepseek_v41/nvidia/model_state.py
     - vllm/models/glm5next/nvidia/ops/kpool_compress.py
     - vllm/v1/hisparse/
+    - vllm/v1/core/kv_cache_coordinator.py
+    - vllm/v1/core/prefix_checkpoint_policy.py
+    - vllm/config/cache.py
     - csrc/hisparse_kernels.cu
     - tests/v1/attention
+    - tests/v1/core/test_prefix_caching.py
   commands:
     - pytest -v -s v1/attention
+    - >-
+      VLLM_TARGET_DEVICE=empty pytest -v -s -m cpu_test
+      v1/core/test_prefix_caching.py
+      -k native_gdn_chunk_checkpoint_survives_different_prompt_suffix
   mirror:
     amd:
       label: ":amd: (MI300) V1 Attention"

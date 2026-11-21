@@ -7064,7 +7064,7 @@ def test_mixed_cache_families_borrow_free_bytes_before_rejecting_growth():
         )
         for stride in strides
     )
-    leases = [[] for _ in pools]
+    leases: list[list[KVCacheBlock]] = [[] for _ in pools]
     for _ in range(128):
         assert arena.can_allocate(list(zip(pools, counts)), prepare=True)
         for pool, count, blocks in zip(pools, counts, leases):
@@ -7082,7 +7082,9 @@ def test_mixed_cache_families_borrow_free_bytes_before_rejecting_growth():
     assert arena.get_usage() == 0
 
 
-def _native_cache_manager():
+def _native_cache_manager(
+    *, arena_size_bytes=192, retention_interval=None, sliding_window=None
+):
     from tests.v1.core.utils import full_layer, mamba_layer
     from vllm.v1.kv_cache_interface import KVCacheGroup
 
@@ -7090,8 +7092,13 @@ def _native_cache_manager():
         block_size=4, num_kv_heads=1, head_size=1, dtype=torch.float16
     )
     state = MambaSpec(block_size=4, shapes=((12,),), dtypes=(torch.float32,))
+    attention_layer = (
+        full_layer(attention)
+        if sliding_window is None
+        else sliding_window_layer(attention, sliding_window)
+    )
     groups = [
-        KVCacheGroup.from_layers({"attention": full_layer(attention)}),
+        KVCacheGroup.from_layers({"attention": attention_layer}),
         KVCacheGroup.from_layers(
             {
                 "gdn": mamba_layer(
@@ -7101,7 +7108,12 @@ def _native_cache_manager():
         ),
     ]
     config = KVCacheConfig(
-        4, [], groups, pool_block_strides=(16, 48), arena_size_bytes=192
+        arena_size_bytes // 48,
+        [],
+        groups,
+        pool_block_strides=(16, 48),
+        arena_size_bytes=arena_size_bytes,
+        prefix_cache_retention_interval=retention_interval,
     )
     return KVCacheManager(config, 32, scheduler_block_size=4, hash_block_size=4)
 
@@ -7124,6 +7136,30 @@ def test_native_cache_manager_prices_token_pages_and_gdn_slots_separately():
     assert manager.allocate_slots(request, 4, delay_cache_blocks=True) is not None
     assert manager.block_pool.memory.free_bytes == 16
     manager.free(request)
+    assert manager.usage == 0
+    assert manager.reset_prefix_cache()
+
+
+@pytest.mark.parametrize("sliding_window", [None, 4])
+def test_native_gdn_chunk_checkpoint_survives_different_prompt_suffix(sliding_window):
+    """A shared prefix can resume before the previous prompt's retained tail."""
+    manager = _native_cache_manager(
+        arena_size_bytes=384, retention_interval=0, sliding_window=sliding_window
+    )
+    prefix = list(range(8))
+    warmup = make_request("warmup", prefix + [10] * 6, 4, sha256)
+    for tokens in (4, 4, 4, 2):
+        manager.new_step_starts()
+        assert manager.allocate_slots(warmup, tokens) is not None
+        warmup.num_computed_tokens += tokens
+    manager.free(warmup)
+    manager.new_step_starts()
+
+    replay = make_request("replay", prefix + [11] * 6, 4, sha256)
+    blocks, cached_tokens, _ = manager.get_computed_blocks(replay)
+    assert cached_tokens == len(prefix)
+    assert len(blocks.blocks[0]) == 2
+    assert blocks.blocks[1][-1].block_hash_num_tokens == len(prefix)
     assert manager.usage == 0
     assert manager.reset_prefix_cache()
 

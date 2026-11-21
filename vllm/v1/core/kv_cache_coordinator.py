@@ -13,7 +13,10 @@ from vllm.v1.core.kv_cache_utils import (
     partial_hash_hits_enabled,
 )
 from vllm.v1.core.prefix_cache_index import PrefixCacheIndex
-from vllm.v1.core.prefix_checkpoint_policy import replay_boundaries
+from vllm.v1.core.prefix_checkpoint_policy import (
+    prefill_chunk_checkpoint,
+    replay_boundaries,
+)
 from vllm.v1.core.single_type_kv_cache_manager import (
     CrossAttentionManager,
     FullAttentionManager,
@@ -366,11 +369,21 @@ class KVCacheCoordinator(ABC):
         for manager in self.single_type_managers:
             if not manager.enable_caching:
                 continue
+            manager_boundaries: tuple[int, ...] = boundaries
+            if self.memory_arena is not None and self.retention_interval == 0:
+                checkpoint = prefill_chunk_checkpoint(
+                    num_computed_tokens,
+                    request.num_prompt_tokens,
+                    num_cacheable_tokens,
+                    self.scheduler_block_size,
+                )
+                if checkpoint is not None:
+                    manager_boundaries = (*boundaries, checkpoint)
             manager.cache_blocks(
                 request,
                 num_cacheable_tokens,
                 retention_interval=self.retention_interval,
-                replay_boundaries=boundaries,
+                replay_boundaries=manager_boundaries,
             )
 
     def emit_cached_block_events(
@@ -584,7 +597,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
             block_hashes=block_hashes,
             max_length=max_cache_hit_length,
             kv_cache_group_ids=[0],
-            block_pool=self.block_pool,
+            block_pool=self.single_type_managers[0].block_pool,
             block_size=self.group_block_size,
             manager_config=self.manager_config,
             alignment_tokens=self.block_size,

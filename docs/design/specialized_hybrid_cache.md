@@ -95,7 +95,13 @@ state preparation before the transfer has been submitted.
 
 Checkpoint retention lives in `prefix_checkpoint_policy.py`. It selects
 committed token positions from retention intervals and reachable replay
-boundaries. The state allocator supplies physical slots for those positions.
+boundaries. With the default sparse policy, the coordinator retains state and
+sliding-window coverage at completed prefill chunk boundaries as well as the
+prompt tail. A different suffix can therefore resume from a preceding chunk
+without needing a state from inside the old suffix. These are already computed
+states; their cached slots remain
+reclaimable under the shared byte budget. The state allocator supplies physical
+slots for those positions.
 Explicit extensible-cache mode is rejected for the stable arena.
 
 ## SGLang references

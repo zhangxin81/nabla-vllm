@@ -7,6 +7,22 @@ from collections.abc import Sequence
 from vllm.v1.kv_cache_interface import get_reusable_prefix_length
 
 
+def prefill_chunk_checkpoint(
+    chunk_end: int,
+    num_prompt_tokens: int,
+    num_cacheable_tokens: int,
+    alignment_tokens: int,
+) -> int | None:
+    """Keep a complete prefill state before a prompt's possibly different suffix."""
+    if (
+        0 < chunk_end < num_prompt_tokens
+        and chunk_end <= num_cacheable_tokens
+        and chunk_end % alignment_tokens == 0
+    ):
+        return chunk_end
+    return None
+
+
 def replay_boundaries(
     num_prompt_tokens: int,
     num_hash_lookahead_tokens: int,
