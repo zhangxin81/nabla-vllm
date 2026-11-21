@@ -7079,6 +7079,11 @@ def test_native_cache_manager_prices_token_pages_and_gdn_slots_separately():
     )
     assert not (state_id * 48 <= attention_id * 16 < (state_id + 1) * 48)
     assert manager.block_pool.memory.free_bytes == 80
+    first_ids = manager.get_block_ids(request.request_id)
+    request.num_computed_tokens = 3
+    assert manager.allocate_slots(request, 1, delay_cache_blocks=True) is not None
+    assert manager.get_block_ids(request.request_id) == first_ids
+    assert manager.block_pool.memory.free_bytes == 80
     request.num_computed_tokens = 4
     assert manager.allocate_slots(request, 4, delay_cache_blocks=True) is not None
     assert manager.block_pool.memory.free_bytes == 16

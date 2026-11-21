@@ -230,8 +230,9 @@ class KVCacheCoordinator(ABC):
         if self.memory_arena is None:
             return sum(count for _, count in allocation_needs)
         return sum(
-            count * pool.block_stride_bytes // self.memory_arena.unit_bytes
+            count * (pool.block_stride_bytes // self.memory_arena.unit_bytes)
             for pool, count in allocation_needs
+            if count
         )
 
     def allocation_fits(
@@ -241,6 +242,10 @@ class KVCacheCoordinator(ABC):
     ) -> bool:
         if self.memory_arena is None:
             return True
+        if not any(count for _, count in self.allocation_needs) and not any(
+            new_computed_blocks
+        ):
+            return self.memory_arena.can_allocate((), prepare=prepare)
         needs = [
             (pool, max(0, count - sum(not b.is_null and b.ref_cnt == 0 for b in hits)))
             for (pool, count), hits in zip(self.allocation_needs, new_computed_blocks)
