@@ -288,7 +288,7 @@ def test_bench_native_cache_byte_ownership(native_cache_config):
     specs = [group.distinct_specs[0] for group in groups]
     strides = config.pool_block_strides
     batch = build_batch(
-        parse_case("decode=2*1@9"),
+        parse_case("mix=1@2,17"),
         groups,
         config.num_blocks,
         1000,

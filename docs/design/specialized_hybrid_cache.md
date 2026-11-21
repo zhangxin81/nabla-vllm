@@ -62,6 +62,12 @@ Every group consumes the same plan even when its allocation order differs.
 Unsuccessful admission commits no allocations. The plan is discarded at the
 end of allocation, including exceptional exits.
 
+Fresh slots of the same stride use a soft address cursor to reduce interleaved
+alignment holes. Initial request needs determine cursor starting positions,
+without reserving a quota for any family. If that position is occupied,
+allocation falls back to available ranges and cached-slot LRU order. Cursors
+reset when the arena has no live allocations, including transfer references.
+
 Each queried stride caches its exact count of aligned free slots. Reserving a
 range adjusts the count for that range's split; releasing it adjusts the merged
 ranges. Repeated pool-capacity queries therefore do not scan every free interval.
