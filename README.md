@@ -65,9 +65,9 @@ Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
 
 历史 Qwen 和 DeepSeek 的首轮已完成 234 个有效测试点。
 DeepSeek 的高并发 decode 回退经调度和分配布局修复后，
-新版本 NIXL 首轮的同点吞吐比中位数为 1.003；原来回退最大的
+新版本 NIXL 和 CUDA IPC 首轮的同点吞吐比中位数分别为 1.003 和 1.001；原来回退最大的
 128／1024、并发 128 点，本轮吞吐为上游的 99.5%。
-CUDA IPC、补充权重复测、第二／三轮和共享前缀实验仍在进行；
+补充权重复测、第二／三轮和共享前缀实验仍在进行；
 当前结果不构成 v0.1 的整体性能结论。
 
 新运行时固定为 `b1e3f20751`，上游固定为 `8e45c458f6`。
@@ -80,6 +80,10 @@ IPC 在 65536／128、并发 8 的点比上游低 11.3%，长输出高并发也�
 第二／三轮尚未完成。这些单轮数据用于后续复测和迭代，不代表生产流量收益。
 完整数据见 [Qwen 首轮 CSV](docs/benchmarks/nabla-vllm/qwen-first-round.csv)
 和 [基线记录](docs/benchmarks/nabla-vllm/h100-4p4d-20261120.md)。
+
+DeepSeek 首轮也已完成 117 个有效点，NIXL 和 CUDA IPC 的最低吞吐比分别为
+0.9604 和 0.9471，均出现在 2048／1024、并发 128。
+完整数据见 [DeepSeek 首轮 CSV](docs/benchmarks/nabla-vllm/deepseek-first-round.csv)。
 
 合成性能负载使用固定 dataset seed、`temperature=0` 和 `ignore_eos`。
 主矩阵关闭 prefix caching，共享前缀另测。
