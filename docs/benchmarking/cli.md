@@ -17,7 +17,8 @@ see [vllm bench forward](../cli/README.md#forward).
 For skewed synthetic MoE expert loads, use `--routing zipf`:
 
 ```bash
-vllm bench forward --model Qwen/Qwen3-30B-A3B \
+model_path=/path/to/target-checkpoint
+nabla-vllm bench forward --model "$model_path" \
   --routing zipf --case decode=6*1@8192 --case prefill=2048
 ```
 
