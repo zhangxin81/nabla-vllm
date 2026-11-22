@@ -33,7 +33,9 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 [#42301](https://github.com/vllm-project/vllm/pull/42301) 已关闭、未合入，但 GDN
 投影重叠已由上游 #64425 覆盖，本仓库保留该受限实现。
 
-# 39902 已由合入的 #39904 替代。这两项不计入当前相对原始 vLLM 的独有优势
+[#39902](https://github.com/vllm-project/vllm/pull/39902) 已由合入的
+[#39904](https://github.com/vllm-project/vllm/pull/39904) 替代。
+这两项不计入当前相对原始 vLLM 的独有优势。
 
 其他社区来源的优化也记录在集成文档中。
 
@@ -61,8 +63,24 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 
 ## 当前默认版本的性能对照
 
-回退版本正在与未经修改的 vLLM `8e45c458f619dbabff879c0f53c58fd9f296e983`
-重新做 8×H100、4P4D、TP4／EP4 测试。完成后在此列出吞吐和延迟优势。
+修正后的缓存回退版本与未经修改的 vLLM
+`8e45c458f619dbabff879c0f53c58fd9f296e983`
+进行 8×H100、4P4D、TP4／EP4 对照，固定相同的权重、依赖、输入输出、并发
+和采样参数。每个配对点指同一个模型、输入长度、输出长度、并发与轮次。
+
+| 对照组 | 源码 | P/D 传输路径 |
+| --- | --- | --- |
+| 原始 vLLM | `8e45c458f6` | 上游默认 NixlConnector |
+| nabla 初建 connector | `f4a4ab4ccc` | 保留 #65639，关闭 CUDA IPC，使用普通 NIXL |
+| nabla 初建 connector，CUDA IPC | `f4a4ab4ccc` | 保留 #65639，显式开启同机 CUDA IPC |
+| nabla 默认 connector | `85a2d4572e` | NIXL 实现恢复为上游 `8e45c458f6` |
+
+初建 connector 指本仓库集成的 #65639 路径及其安全修正。默认 connector
+对照保留相同的缓存回退、模型和内核优化，独立回退 NIXL 实现。
+两份 nabla 源码的差别限定为 connector 和对应的测试、说明。
+测试结果尚未完成，当前不把缓存回退版本称为已证明的最优性能。
+完成后在此列出吞吐和延迟优势，同时保留回退点。
+源码、矩阵、回归命令和证据见 [缓存回退与 Connector 对照](docs/benchmarks/nabla-vllm/h100-cache-rollback-20261122.md)。
 下面的 v0.1.0 数据包含已回退的缓存重构，属于历史记录。
 
 ## v0.1.0 历史性能
