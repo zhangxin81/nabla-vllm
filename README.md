@@ -32,14 +32,17 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 
 [#42301](https://github.com/vllm-project/vllm/pull/42301) 已关闭、未合入，但 GDN
 投影重叠已由上游 #64425 覆盖，本仓库保留该受限实现。
-# 39902 已由合入的 #39904 替代。这两项不计入当前相对原始 vLLM 的独有优势。
+
+# 39902 已由合入的 #39904 替代。这两项不计入当前相对原始 vLLM 的独有优势
+
 其他社区来源的优化也记录在集成文档中。
 
 ## 当前缓存实现
 
 独立前缀索引、共享字节 arena、GDN state slot 独立分配和自定义 checkpoint
 策略已回退。当前 KV／GDN 的分组、分配、前缀保留和清零／复制恢复到
-原始 vLLM `8e45c458f6`，同时保留内核优化和 NixlConnector 的 CUDA IPC 路径。
+原始 vLLM `8e45c458f6`，包含混合模型的块对齐和 GDN 页面 padding，
+同时保留内核优化和 NixlConnector 的 CUDA IPC 路径。
 回退后的源码与原始提交会重新做同配置测试，作为当前默认版本的性能对照。
 历史重构及结果保留在 [v0.1.0](https://github.com/zhangxin81/nabla-vllm/releases/tag/v0.1.0)。
 

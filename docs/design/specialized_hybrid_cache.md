@@ -1,7 +1,7 @@
 # 当前 KV／GDN 缓存策略
 
 独立 cache ownership 重构已回退。当前运行时的 BlockPool、KVCacheManager、
-KVCacheCoordinator、KVCacheConfig 和缓存规划、清零／复制采用上游
+KVCacheCoordinator、KVCacheConfig 和缓存规划、GDN 页面 padding、块粒度、清零／复制采用上游
 `8e45c458f619dbabff879c0f53c58fd9f296e983` 的实现。
 Qwen PLE／GDN 自定义合并、每组独立容量、共享字节 arena、独立前缀索引和
 额外的 prefill chunk checkpoint 保留均已移除。
