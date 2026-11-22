@@ -16,7 +16,6 @@ steps:
     - vllm/models/glm5next/nvidia/ops/kpool_compress.py
     - vllm/v1/hisparse/
     - vllm/v1/core/kv_cache_coordinator.py
-    - vllm/v1/core/prefix_checkpoint_policy.py
     - vllm/config/cache.py
     - csrc/hisparse_kernels.cu
     - tests/v1/attention

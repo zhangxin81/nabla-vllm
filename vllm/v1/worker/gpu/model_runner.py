@@ -883,11 +883,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.kv_connector = NO_OP_KV_CONNECTOR
         else:
             self.kv_caches_by_layer = kv_caches_dict
-            from vllm.v1.worker.utils import cache_arena_unit_view
-
-            self.arena_unit_view = cache_arena_unit_view(
-                self.kv_cache_config, self.kv_caches_by_layer
-            )
             self.kv_connector = get_kv_connector(self.vllm_config, kv_caches_dict)
 
             # AuxOutput connector requires resolved kv_cache_config.
@@ -900,19 +895,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
     def _init_kv_zero_meta(self) -> None:
         """Build KV-block zeroing metadata; invoked from gpu_worker."""
-        from vllm.v1.worker.utils import cache_arena_unit_view
-
-        self.arena_unit_view = cache_arena_unit_view(
-            self.kv_cache_config, self.kv_caches_by_layer
-        )
         self.kv_block_zeroer = KVBlockZeroer(
             self.device,
             attn_groups_iter=(g for groups in self.attn_groups for g in groups),
             kernel_block_sizes=self.kernel_block_sizes,
             static_forward_context=self.compilation_config.static_forward_context,
             num_blocks=self.kv_cache_config.num_blocks,
-            arena_unit_view=self.arena_unit_view,
-            arena_null_bytes=max(self.kv_cache_config.pool_block_strides or [0]),
         )
 
     @torch.inference_mode()
@@ -1410,12 +1398,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # zeroing new blocks and before the forward pass reads them.
         if scheduler_output.kv_cache_block_copies:
             copy_kv_cache_blocks_inplace(
-                [self.arena_unit_view]
-                if self.arena_unit_view is not None
-                else [*self.kv_caches, *self.replayssm_block_copy_tensors],
-                self.arena_unit_view.shape[0]
-                if self.arena_unit_view is not None
-                else self.kv_cache_config.num_blocks,
+                [*self.kv_caches, *self.replayssm_block_copy_tensors],
+                self.kv_cache_config.num_blocks,
                 scheduler_output.kv_cache_block_copies,
             )
 

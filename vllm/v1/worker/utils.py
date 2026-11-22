@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import product as iprod
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
@@ -27,7 +27,7 @@ from vllm.v1.attention.backend import (
     CommonAttentionMetadata,
     MultipleOf,
 )
-from vllm.v1.core.kv_cache_utils import KVCacheBlockCopy, KVCacheByteCopy
+from vllm.v1.core.kv_cache_utils import KVCacheBlockCopy
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     KVCacheConfig,
@@ -102,16 +102,6 @@ def _zero_kv_blocks_kernel(
     )
 
 
-@triton.jit
-def _zero_cache_byte_ranges_kernel(buf, ranges, BLOCK: tl.constexpr):
-    index = tl.program_id(0)
-    start = tl.load(ranges + index * 2).to(tl.int64)
-    size = tl.load(ranges + index * 2 + 1).to(tl.int64)
-    offset = tl.program_id(1).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
-    ptr = tl.cast(buf, tl.pointer_type(tl.int32))
-    tl.store(ptr + start // 4 + offset, 0, mask=offset < size // 4)
-
-
 class KVBlockZeroer:
     """Manages efficient zeroing of KV cache blocks via a Triton kernel.
 
@@ -128,8 +118,6 @@ class KVBlockZeroer:
         static_forward_context: dict[str, Any],
         num_blocks: int,
         runner_only_attn_layers: set[str] | None = None,
-        arena_unit_view: torch.Tensor | None = None,
-        arena_null_bytes: int = 0,
     ) -> None:
         """Precompute the absolute-address table for the Triton zeroing kernel.
 
@@ -150,28 +138,9 @@ class KVBlockZeroer:
         Only AttentionSpec layers are processed; Mamba layers are skipped.
         """
         self.device = device
-        self.arena_unit_view = arena_unit_view
-        self.arena_null_bytes = arena_null_bytes
         self._meta: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int] | None
         ) = None
-        if arena_unit_view is not None:
-            assert 0 < arena_null_bytes <= arena_unit_view.numel()
-            stride = arena_unit_view.shape[-1]
-            assert stride % 4 == 0
-            page = stride // 4
-            block = min(1 << (page - 1).bit_length(), 1024)
-            self._meta = (
-                torch.tensor(
-                    [arena_unit_view.data_ptr()], dtype=torch.uint64, device=device
-                ),
-                torch.tensor([page], dtype=torch.int64, device=device),
-                torch.tensor([page], dtype=torch.int64, device=device),
-                cdiv(page, block),
-                block,
-                1,
-            )
-            return
 
         if runner_only_attn_layers is None:
             runner_only_attn_layers = set()
@@ -260,22 +229,9 @@ class KVBlockZeroer:
             len(seg_addrs),
         )
 
-    def zero_block_ids(self, block_ids: list[int] | list[tuple[int, int]]) -> None:
+    def zero_block_ids(self, block_ids: list[int]) -> None:
         """Zero the KV cache memory for the given block IDs."""
         if not block_ids or self._meta is None:
-            return
-        if self.arena_unit_view is not None:
-            assert all(isinstance(item, tuple) for item in block_ids)
-            byte_ranges = cast(list[tuple[int, int]], block_ids)
-            max_bytes = max(size for _, size in byte_ranges)
-            block = 1024
-            _zero_cache_byte_ranges_kernel[
-                (len(block_ids), cdiv(max_bytes, block * 4))
-            ](
-                self.arena_unit_view,
-                async_tensor_h2d(block_ids, device=self.device, dtype=torch.int64),
-                BLOCK=block,
-            )
             return
         (
             seg_addrs,
@@ -299,11 +255,7 @@ class KVBlockZeroer:
     def warmup(self, num_kv_blocks: int) -> None:
         """JIT-compile the zeroing kernel before the first real request."""
         if num_kv_blocks > 0:
-            self.zero_block_ids(
-                [(0, self.arena_null_bytes)]
-                if self.arena_unit_view is not None
-                else [0]
-            )
+            self.zero_block_ids([0])
 
 
 @dataclass(eq=False, slots=True)
@@ -539,12 +491,7 @@ def customize_attention_spec(
     spec = backend.customize_spec(spec)
     sizes = backend.get_supported_kernel_block_sizes_for_layers(spec, [layer_name])
     fixed_sizes = [s for s in sizes if isinstance(s, int)]
-    if (
-        spec.block_stride_alignment is None
-        and sizes
-        and fixed_sizes == sizes
-        and not (spec.tokens_per_state <= 1 and spec.uses_slot_mapping)
-    ):
+    if spec.block_stride_alignment is None and sizes and fixed_sizes == sizes:
         spec = replace(spec, block_stride_alignment=MultipleOf(max(fixed_sizes)))
     return spec
 
@@ -695,24 +642,6 @@ def allocate_kv_cache(
     return kv_caches
 
 
-def cache_arena_unit_view(
-    config: KVCacheConfig, kv_caches: dict[str, torch.Tensor]
-) -> torch.Tensor | None:
-    """View the stable backing in units used by scheduler zero/copy descriptors."""
-    if config.pool_block_strides is None:
-        return None
-    tensor = next(iter(kv_caches.values()))
-    storage = tensor.untyped_storage()
-    assert storage.nbytes() == config.arena_size_bytes
-    assert all(
-        t.untyped_storage().data_ptr() == storage.data_ptr() for t in kv_caches.values()
-    )
-    unit = config.arena_unit_bytes
-    return torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(
-        storage, 0, (config.arena_size_bytes // unit, 1, 1, unit)
-    )
-
-
 def layer_spec_for_tensor(
     kv_cache_config: KVCacheConfig, tensor: KVCacheTensor
 ) -> tuple[int, KVCacheSpec]:
@@ -737,7 +666,16 @@ def layer_kernel_block_size(
 
 
 def _allocate_kv_cache_buffer(raw_size: int, device: torch.device) -> torch.Tensor:
-    return torch.zeros(raw_size, dtype=torch.int8, device=device)
+    if current_platform.is_rocm():
+        # Pad to the page granularity MoRIIO needs to register the shared
+        # backing as a single RDMA memory region. Other platforms keep the
+        # exact-size allocation (see #53974), so anything reading
+        # storage.nbytes() has to tolerate the tail on ROCm alone.
+        page_size = 4096
+        buf_size = ((raw_size + page_size - 1) // page_size) * page_size
+    else:
+        buf_size = raw_size
+    return torch.zeros(buf_size, dtype=torch.int8, device=device)
 
 
 def prepare_kernel_block_sizes(
@@ -1085,39 +1023,9 @@ def _copy_runs_kernel(runs_ptr, num_runs, WORD: tl.constexpr, BLOCK: tl.constexp
 def copy_kv_cache_blocks_inplace(
     kv_caches: Iterable[torch.Tensor],
     num_blocks: int,
-    kv_cache_block_copies: Sequence[KVCacheBlockCopy | KVCacheByteCopy],
+    kv_cache_block_copies: Sequence[KVCacheBlockCopy],
 ) -> None:
     if not kv_cache_block_copies:
-        return
-
-    if isinstance(kv_cache_block_copies[0], KVCacheByteCopy):
-        caches = list(kv_caches)
-        assert len(caches) == 1
-        cache = caches[0]
-        raw = cache.view(-1)
-        descriptors = np.asarray(kv_cache_block_copies, dtype=np.int64)
-        assert descriptors.shape[1] == 3
-        assert (descriptors >= 0).all() and (descriptors[:, 2] > 0).all()
-        assert (descriptors[:, :2] + descriptors[:, 2:3] <= raw.numel()).all()
-        starts = descriptors[:, 0]
-        order = np.argsort(starts)
-        ends = np.maximum.accumulate((starts + descriptors[:, 2])[order])
-        indices = (
-            np.searchsorted(
-                starts[order], descriptors[:, 1] + descriptors[:, 2], side="left"
-            )
-            - 1
-        )
-        assert not ((indices >= 0) & (ends[indices] > descriptors[:, 1])).any(), (
-            "Overlapping cache copies"
-        )
-        if cache.device.type == "cuda":
-            runs = descriptors.T.copy()
-            runs[:2] += raw.data_ptr()
-            _launch_copy_runs(runs, cache.device)
-        else:
-            for source, destination, size in descriptors:
-                raw[destination : destination + size].copy_(raw[source : source + size])
         return
 
     indices_np = np.array(kv_cache_block_copies, dtype=np.int64)
@@ -1177,25 +1085,22 @@ def copy_kv_cache_blocks_inplace(
         runs = np.concatenate(
             [_block_copy_runs(blocks, block_ids) for blocks in block_views], axis=1
         )
-        _launch_copy_runs(runs, device)
+        # Copy in the widest word that divides every address and size.
+        bits = int(np.bitwise_or.reduce(runs, axis=None))
+        word_bytes = min(8, bits & -bits)
+        runs[2] //= word_bytes
+        block = 4096
+        _copy_runs_kernel[(runs.shape[1], triton.cdiv(int(runs[2].max()), block))](
+            async_tensor_h2d(runs, device=device),
+            runs.shape[1],
+            WORD={8: tl.int64, 4: tl.int32, 2: tl.int16, 1: tl.int8}[word_bytes],
+            BLOCK=block,
+        )
         return
 
     src, dst = async_tensor_h2d(indices_np, device=device).unbind(dim=1)
     for blocks in block_views:
         blocks[dst] = blocks[src]
-
-
-def _launch_copy_runs(runs: np.ndarray, device: torch.device) -> None:
-    bits = int(np.bitwise_or.reduce(runs, axis=None))
-    word_bytes = min(8, bits & -bits)
-    runs[2] //= word_bytes
-    block = 4096
-    _copy_runs_kernel[(runs.shape[1], triton.cdiv(int(runs[2].max()), block))](
-        async_tensor_h2d(runs, device=device),
-        runs.shape[1],
-        WORD={8: tl.int64, 4: tl.int32, 2: tl.int16, 1: tl.int8}[word_bytes],
-        BLOCK=block,
-    )
 
 
 def is_uniform_query_len(num_reqs: int, num_tokens: int, max_query_len: int) -> bool:

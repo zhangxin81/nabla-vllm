@@ -62,8 +62,9 @@ HB_NOTIF_PREFIX = "HB:"
 #      remote_lease_extension; the consumer gates every remote read on it
 #  18: Add optional same-host CUDA IPC allocation metadata
 #  19: Preserve per-region capacities for independent native-stride pools
+#  20: Restore upstream shared-pool geometry while retaining optional CUDA IPC
 #
-NIXL_CONNECTOR_VERSION: int = 19
+NIXL_CONNECTOR_VERSION: int = 20
 
 
 @dataclass(slots=True)
@@ -95,8 +96,6 @@ class NixlAgentMetadata:
     # Packed member -> (byte offset in its region's block, bytes per page).
     packed_member_layouts: dict[str, tuple[int, int]] = field(default_factory=dict)
     local_ipc: LocalIpcMetadata | None = None
-    # Logical block size of each non-Mamba, non-ring transfer group, in order.
-    transfer_block_sizes: list[int] = field(default_factory=list)
 
 
 @dataclass

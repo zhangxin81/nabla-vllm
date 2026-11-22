@@ -203,7 +203,6 @@ def run_case(
         dcp_size,
         lookahead,
         sampling_params,
-        kv_cache_config=kv_config,
     )
     zero_kv_blocks(kv_caches, attn_groups, batch, kv_config.num_blocks)
     profile_prefix = None

@@ -245,12 +245,6 @@ class KVCacheBlockCopy(NamedTuple):
     dst_block_id: int
 
 
-class KVCacheByteCopy(NamedTuple):
-    src_offset: int
-    dst_offset: int
-    size: int
-
-
 class FreeKVCacheBlockQueue:
     """This class organizes a list of KVCacheBlock objects to a doubly linked
     list of free blocks. We implement this class instead of using Python
@@ -1065,18 +1059,6 @@ def get_max_concurrency_for_kv_cache_config(
 
     Host groups use a separate pool; the smaller concurrency limit applies.
     """
-    if kv_cache_config.pool_block_strides is not None:
-        bytes_per_request = sum(
-            group.max_allocated_blocks_per_request(vllm_config) * stride
-            for group, stride in zip(
-                kv_cache_config.kv_cache_groups,
-                kv_cache_config.pool_block_strides,
-                strict=True,
-            )
-        )
-        return (
-            kv_cache_config.arena_size_bytes - max(kv_cache_config.pool_block_strides)
-        ) / bytes_per_request
     num_blocks_per_request = 0
     host_blocks_per_request = 0
     for group in kv_cache_config.kv_cache_groups:
@@ -1105,11 +1087,6 @@ def generate_scheduler_kv_cache_config(
         cfg.hisparse_host_num_blocks == kv_cache_configs[0].hisparse_host_num_blocks
         for cfg in kv_cache_configs
     )
-    assert all(
-        cfg.pool_block_strides == kv_cache_configs[0].pool_block_strides
-        and cfg.arena_size_bytes == kv_cache_configs[0].arena_size_bytes
-        for cfg in kv_cache_configs
-    ), "Independent cache pools require identical native geometry on every rank"
     # Worker configs share scheduler geometry and the resolved zeroing
     # decision, so use an arbitrary one to initialize the scheduler.
     cfg = copy.deepcopy(kv_cache_configs[0])

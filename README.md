@@ -7,48 +7,64 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 我们保留目标模型所需的调度、并行、通信和内核能力，逐步删除无关后端和模型依赖。
 每次裁剪或重构都要能说明它改变了什么，并用同配置的服务基线验证正确性、吞吐和延迟。
 
-## 缓存的索引、分配与检查点分别管理
+## 为什么维护 nabla-vllm
 
-目标设计是：**统一管理前缀索引和内存预算，KV 按 token page 分配，
-GDN 按 state slot 分配，checkpoint 的位置单独决定。**
+性能优势是这个代码库的主要目标。我们聚焦两个目标模型、NVIDIA CUDA 和
+P/D 分离，把适用的优化放进可运行、可复测的组合，再用固定源码的原始 vLLM
+作对照。README 同时展示吞吐、延迟和回退点，性能优势以实测负载为准。
 
-前缀索引回答哪些已提交的输入历史可以复用；物理池负责资源分配和回收；
-checkpoint 策略决定在哪些位置保留可续写的状态。
-三者通过明确的引用和生命周期约束协作。
+**这个代码库的一部分出发点，就是我们在 vLLM 提交的 PR 没能合入上游。**
+nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保留源 PR 与源码版本。
+上游合入后会重新核对差异。PR 已集成代表功能可用，其端到端收益仍须单独测量。
 
-| 资源 | 分配单位 | 复用条件 |
-| --- | --- | --- |
-| Attention KV | Token page | 输入历史和有效注意力窗口一致 |
-| Qwen GDN／PLE | State slot | 精确的已提交检查点，含必要的回滚状态 |
-| QSA／indexer | 原生 page 和压缩单位 | 索引、KV 与输入覆盖范围一致 |
-| DeepSeek sparse／compressor | 原生 page 或 state | 压缩边界、共享缓存与续写边界一致 |
+## 已集成、尚未被上游合入的个人 PR
 
-公共预算按实际 backing bytes 计价，包含对齐、padding、活跃请求和传输中的引用。
-请求必须同时满足各资源池的准入条件，才能提交分配。
-异步传输完成前保留源检查点，CUDA Graph 回放期间保持缓冲区地址稳定。
+以下状态核对于 2026-11-22，作者均为 `zhangxin81`。源码版本和下游适配见
+[PR 集成记录](docs/design/nabla_vllm_pr_integration.md)。
 
-这一方向深度参考 SGLang 的独立 Mamba slot allocator、统一 state pool 和
-checkpoint 管理，但不引入 SGLang 运行时依赖。
-源码指针和迁移约束见 [缓存设计](docs/design/specialized_hybrid_cache.md)。
+| PR | 上游状态 | 本仓库保留的能力 | 性能适用范围 |
+| --- | --- | --- | --- |
+| [#67468](https://github.com/vllm-project/vllm/pull/67468) | Open，未合入 | H20／H100 原生小头数 BF16 FlashMLA 分派 | 对应 MLA shape 和 dtype；不把它的原始测量推广到全部模型 |
+| [#65639](https://github.com/vllm-project/vllm/pull/65639) | Open，未合入 | 同机 CUDA IPC pull、stream 依赖及别名复制合并 | 显式开启的同机 NixlConnector P/D；本次单列测量 |
+| [#65136](https://github.com/vllm-project/vllm/pull/65136) | Open，未合入 | toy proxy 向所有后端重置前缀缓存，带鉴权和失败报告 | 支持可重复的缓存实验；不单独宣称吞吐收益 |
+| [#43594](https://github.com/vllm-project/vllm/pull/43594) | Open，未合入 | DFlash／DFlash2 context KV 批量写入 | 推测解码路径；关闭推测解码的基线不衡量其收益 |
+| [#41115](https://github.com/vllm-project/vllm/pull/41115) | Open，未合入 | 按 shape 选择 per-token FP8 launch size，校验直接 op 参数 | per-token FP8 操作；测试中的 Qwen 权重使用 block FP8 |
+
+[#42301](https://github.com/vllm-project/vllm/pull/42301) 已关闭、未合入，但 GDN
+投影重叠已由上游 #64425 覆盖，本仓库保留该受限实现。
+# 39902 已由合入的 #39904 替代。这两项不计入当前相对原始 vLLM 的独有优势。
+其他社区来源的优化也记录在集成文档中。
+
+## 当前缓存实现
+
+独立前缀索引、共享字节 arena、GDN state slot 独立分配和自定义 checkpoint
+策略已回退。当前 KV／GDN 的分组、分配、前缀保留和清零／复制恢复到
+原始 vLLM `8e45c458f6`，同时保留内核优化和 NixlConnector 的 CUDA IPC 路径。
+回退后的源码与原始提交会重新做同配置测试，作为当前默认版本的性能对照。
+历史重构及结果保留在 [v0.1.0](https://github.com/zhangxin81/nabla-vllm/releases/tag/v0.1.0)。
 
 ## 当前完成度
 
 | 工作 | 状态 |
 | --- | --- |
 | CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现与 MoRIIO 的 ROCm P/D 实现；保留 NVIDIA 架构选择 |
-| 公共前缀索引 | `PrefixCacheIndex` 已接入 coordinator 和物理 `BlockPool`，保留池内 ID 与 owner 引用 |
-| 独立 state slot 和统一字节预算 | 已接入准入、分配、runner、清零、复制和 NIXL 续写；H100 主矩阵和前缀复用验证完成 |
+| KV／GDN 缓存管理 | 已恢复原始 vLLM 的共享 BlockPool 和 checkpoint 策略 |
+| NixlConnector CUDA IPC | 保留同机 stream 依赖、源引用生命周期和加载后的续写 |
 | 模型与内核依赖裁剪 | 已删除无关模型和后端实现，保留两个模型及 draft 的依赖闭包 |
 | 下游 PR 集成 | 已导入选定的 FlashMLA、DFlash、FP8、NIXL IPC 和 proxy 改动，见集成记录 |
 
-Attention page 与 GDN state slot 已按各自的原生 stride 计价，
-通过稳定的 tensor view 共用 backing allocation。H100 组合服务的吞吐结果见下文。
-导入的每个 PR 也需要在组合后的代码、目标模型和硬件上重新验证。
-具体来源和历史验证范围见 [PR 集成记录](docs/design/nabla_vllm_pr_integration.md)。
+目标模型使用原始 vLLM 的缓存资源管理方式。每个已集成 PR 的验证范围见
+[PR 集成记录](docs/design/nabla_vllm_pr_integration.md)，历史测试只适用于记录中的源码。
 
-## 性能基线与迭代
+## 当前默认版本的性能对照
 
-最新实验为 **8× H100 80GB，4P4D，两侧 TP=4／EP=4**。
+回退版本正在与未经修改的 vLLM `8e45c458f619dbabff879c0f53c58fd9f296e983`
+重新做 8×H100、4P4D、TP4／EP4 测试。完成后在此列出吞吐和延迟优势。
+下面的 v0.1.0 数据包含已回退的缓存重构，属于历史记录。
+
+## v0.1.0 历史性能
+
+历史实验为 **8× H100 80GB，4P4D，两侧 TP=4／EP=4**。
 Prefill 使用 GPU 0～3，Decode 使用 GPU 4～7。
 比较固定源码的上游 vLLM、nabla-vllm 的 NIXL 路径，以及显式开启同机 CUDA IPC 的 nabla-vllm。
 

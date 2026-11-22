@@ -1,5 +1,11 @@
 # nabla-vllm downstream PR integration
 
+The cache-ownership refactor was reverted after v0.1.0. Native pool sizing,
+PLE/GDN folding, shared byte admission, checkpoint-policy extraction and
+covering-region cache adaptations below describe the historical integration.
+The current cache runtime restores upstream `8e45c458f6`; kernel and IPC
+contributions remain. See [current cache policy](specialized_hybrid_cache.md).
+
 The current integration uses upstream baseline
 `8e45c458f619dbabff879c0f53c58fd9f296e983`. The original specialization used
 `898a7c68c2d1e869ebde2ce25ffbfc1e253bf0b4`. Source PRs are pinned
@@ -59,8 +65,8 @@ already in the baseline.
 
 NIXL descriptor handles remain owned by the current per-PP-stage structures.
 Lease-expiry checks, source lifetime tracking, and M-RoPE initialization are
-preserved. Protocol version **19** carries independent region capacities and
-strides in addition to the IPC allocation metadata introduced in version 18.
+preserved. Protocol version **20** restores upstream shared-pool geometry while retaining
+the IPC allocation metadata introduced in version 18.
 P and D must run the same revision. IPC remains disabled unless both ends
 explicitly opt in; see the
 [NIXL usage guide](../features/nixl_connector_usage.md).
