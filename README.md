@@ -1,5 +1,9 @@
 # nabla-vllm
 
+本分支是默认 P/D Connector 的性能对照快照。NixlConnector 已恢复为
+上游 `8e45c458f6`，CUDA IPC 扩展留在 `codex/cache-rollback-baseline`。
+其他模型和内核优化与缓存回退版本相同。
+
 nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 **DeepSeek-V4.1-Flash** 构建专用推理运行时。硬件范围限定为 NVIDIA CUDA，
 保留 H20、H100、B200 等架构各自需要的执行路径。
@@ -25,7 +29,6 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 | PR | 上游状态 | 本仓库保留的能力 | 性能适用范围 |
 | --- | --- | --- | --- |
 | [#67468](https://github.com/vllm-project/vllm/pull/67468) | Open，未合入 | H20／H100 原生小头数 BF16 FlashMLA 分派 | 对应 MLA shape 和 dtype；不把它的原始测量推广到全部模型 |
-| [#65639](https://github.com/vllm-project/vllm/pull/65639) | Open，未合入 | 同机 CUDA IPC pull、stream 依赖及别名复制合并 | 显式开启的同机 NixlConnector P/D；本次单列测量 |
 | [#65136](https://github.com/vllm-project/vllm/pull/65136) | Open，未合入 | toy proxy 向所有后端重置前缀缓存，带鉴权和失败报告 | 支持可重复的缓存实验；不单独宣称吞吐收益 |
 | [#43594](https://github.com/vllm-project/vllm/pull/43594) | Open，未合入 | DFlash／DFlash2 context KV 批量写入 | 推测解码路径；关闭推测解码的基线不衡量其收益 |
 | [#41115](https://github.com/vllm-project/vllm/pull/41115) | Open，未合入 | 按 shape 选择 per-token FP8 launch size，校验直接 op 参数 | per-token FP8 操作；测试中的 Qwen 权重使用 block FP8 |
@@ -35,6 +38,8 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 
 # 39902 已由合入的 #39904 替代。这两项不计入当前相对原始 vLLM 的独有优势
 
+[#65639](https://github.com/vllm-project/vllm/pull/65639) 仍未合入上游，
+已集成在初建优化分支；本对照分支回退了该扩展，不计入本快照的已集成能力。
 其他社区来源的优化也记录在集成文档中。
 
 ## 当前缓存实现

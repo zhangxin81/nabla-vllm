@@ -40,12 +40,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorTransferResults,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
-from vllm.distributed.kv_transfer.kv_connector.v1.nixl.local_fastpath import (
-    CudaIpcDriver,
-    LocalIpcMetadata,
-    get_boot_id,
-    normalize_gpu_uuid,
-)
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.metadata import (
     GET_META_MSG,
     HB_NOTIF_PREFIX,
@@ -973,32 +967,6 @@ class NixlBaseConnectorWorker:
         else:
             self.use_host_buffer = self.kv_buffer_device == "cpu"
 
-        self.local_fastpath_enabled = self.kv_transfer_config.get_from_extra_config(
-            "enable_local_fastpath", False
-        )
-        if self.local_fastpath_enabled:
-            if self.device_type != "cuda" or self.use_host_buffer:
-                raise ValueError("NIXL local fast path requires CUDA device KV buffers")
-            if vllm_config.model_config.enable_sleep_mode:
-                raise ValueError("NIXL local fast path does not support sleep mode")
-            if vllm_config.cache_config.enable_extensible_kv_cache:
-                raise ValueError(
-                    "NIXL local fast path requires --disable-extensible-kv-cache"
-                )
-            if (
-                self.kv_transfer_config.is_kv_producer
-                and vllm_config.scheduler_config.async_scheduling
-            ):
-                raise ValueError(
-                    "NIXL local fast-path producers require synchronous scheduling"
-                )
-        self.local_ipc_driver: CudaIpcDriver | None = None
-        self.local_ipc_metadata: LocalIpcMetadata | None = None
-        self.local_ipc_dlists: dict[int, np.ndarray] = {}
-        self.local_ipc_peers: dict[
-            tuple[EngineId, int], tuple[LocalIpcMetadata, tuple[int, ...]]
-        ] = {}
-
         # reserve different cores for start_load_kv() from model_forward()
         if self.device_type == "cpu":
             numa_core_list = current_platform.discover_numa_topology()
@@ -1057,10 +1025,6 @@ class NixlBaseConnectorWorker:
         # into the PP=1 remote's regions that hold its layers; a PP=1 puller
         # reads each stage's regions into the local ones holding its layers.
         self.pp_size = vllm_config.parallel_config.pipeline_parallel_size
-        if self.local_fastpath_enabled and (
-            self.pp_size != 1 or self.pcp_size != 1 or self.dcp_size != 1
-        ):
-            raise ValueError("NIXL local fast path currently requires PP=PCP=DCP=1")
         if self.pp_size > 1:
             if (
                 self._is_hma_required
@@ -1632,7 +1596,15 @@ class NixlBaseConnectorWorker:
                 with self._handshake_lock:
                     del self._handshake_futures[eid]
                     try:
-                        self._install_handshake_result(eid, f.result(), host, port)
+                        remote_agents, clock_offset = f.result()
+                        self._remote_agents[eid] = remote_agents
+                        self._engine_clock_offset[eid] = clock_offset
+                        # Exported lease deadlines are rebased with this offset.
+                        logger.info(
+                            "NIXL clock offset to engine %s: %.3fs", eid, clock_offset
+                        )
+                        self._engine_last_active[eid] = time.perf_counter()
+                        self._track_remote_engine_replacement(eid, host, port)
                     except Exception as e:
                         self._log_failure(
                             failure_type="handshake_setup_failed",
@@ -1645,38 +1617,6 @@ class NixlBaseConnectorWorker:
 
             fut.add_done_callback(done_callback)
             return fut
-
-    def _install_handshake_result(
-        self,
-        engine_id: EngineId,
-        result: tuple[dict[tuple[int, int], str], float],
-        host: str,
-        port: int,
-    ) -> None:
-        if engine_id in self._remote_agents:
-            return
-        remote_agents, clock_offset = result
-        self._remote_agents[engine_id] = remote_agents
-        self._engine_clock_offset[engine_id] = clock_offset
-        logger.info("NIXL clock offset to engine %s: %.3fs", engine_id, clock_offset)
-        self._engine_last_active[engine_id] = time.perf_counter()
-        self._track_remote_engine_replacement(engine_id, host, port)
-
-    def _ensure_handshake_blocking(
-        self,
-        engine_id: EngineId,
-        host: str,
-        port: int,
-        tp_size: int,
-        dcp_size: int = 1,
-        pp_size: int = 1,
-    ) -> None:
-        fut = self._ensure_handshake(engine_id, host, port, tp_size, dcp_size, pp_size)
-        if fut is None:
-            return
-        result = fut.result()
-        with self._handshake_lock:
-            self._install_handshake_result(engine_id, result, host, port)
 
     def _background_nixl_handshake(
         self, req_id: str, remote_engine_id: EngineId, meta: ReqMeta
@@ -1711,35 +1651,6 @@ class NixlBaseConnectorWorker:
                 self._failed_recv_reqs.put(req_id)
 
         fut.add_done_callback(request_ready)
-
-    def _build_local_ipc_metadata(
-        self,
-        registration_ranges: dict[tuple[int, str], tuple[int, int, int]],
-    ) -> LocalIpcMetadata | None:
-        if not getattr(self, "local_fastpath_enabled", False):
-            return None
-        if any(mem_type != "VRAM" for _, mem_type in registration_ranges):
-            raise ValueError("NIXL local fast path supports VRAM regions only")
-        if torch.cuda.get_allocator_backend() != "native":
-            raise ValueError("NIXL local fast path requires the native CUDA allocator")
-        driver = CudaIpcDriver()
-        allocations = tuple(
-            driver.export(start, end - start)
-            for (start, _), (_, end, _) in registration_ranges.items()
-        )
-        if not allocations:
-            raise ValueError("NIXL local fast path found no CUDA allocations")
-        self.local_ipc_driver = driver
-        return LocalIpcMetadata(
-            version=1,
-            boot_id=get_boot_id(),
-            device_uuid=normalize_gpu_uuid(
-                current_platform.get_device_uuid(
-                    torch.accelerator.current_device_index()
-                )
-            ),
-            allocations=allocations,
-        )
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """Register the KV Cache data in nixl."""
@@ -2135,8 +2046,6 @@ class NixlBaseConnectorWorker:
             self.nixl_wrapper.register_memory(descs, backends=self.nixl_backends)
             self._registered_descs.append(descs)
 
-        self.local_ipc_metadata = self._build_local_ipc_metadata(registration_ranges)
-
         self.device_kv_caches = kv_caches
         self.dst_num_blocks[self.engine_id] = self.num_blocks
 
@@ -2191,7 +2100,6 @@ class NixlBaseConnectorWorker:
                 for name in names
             },
             packed_member_layouts=self._packed_member_layouts,
-            local_ipc=self.local_ipc_metadata,
         )
         # Wrap metadata in payload with hash for defensive decoding
         assert self.compat_hash is not None
@@ -2600,8 +2508,6 @@ class NixlBaseConnectorWorker:
         handle = self.nixl_wrapper.prep_xfer_dlist(
             "NIXL_INIT_AGENT", blocks_data, mem_type=self.region_mem_types[0]
         )
-        if getattr(self, "local_fastpath_enabled", False):
-            self.local_ipc_dlists[handle] = blocks_data
         return handle, blocks_data
 
     def _split_remote_blocks(self, meta: NixlAgentMetadata) -> None:
@@ -2723,36 +2629,6 @@ class NixlBaseConnectorWorker:
 
         assert self.transfer_topo is not None
         transfer_topo = self.transfer_topo
-        local_ipc = nixl_agent_meta.local_ipc
-        use_local_fastpath = bool(
-            getattr(self, "local_fastpath_enabled", False)
-            and local_ipc is not None
-            and self.local_ipc_metadata is not None
-            and local_ipc.boot_id == self.local_ipc_metadata.boot_id
-        )
-        if use_local_fastpath:
-            assert local_ipc is not None
-            if local_ipc.version != 1:
-                raise ValueError("Unsupported NIXL local fast-path version")
-            if remote_tp_size != self.transfer_tp_size:
-                raise ValueError(
-                    "NIXL local fast path currently requires matching P/D TP"
-                )
-            if nixl_agent_meta.block_size != self.block_size:
-                raise ValueError(
-                    "NIXL local fast path currently requires matching block sizes"
-                )
-            if (
-                remote_dcp_size != 1
-                or nixl_agent_meta.pcp_size != 1
-                or nixl_agent_meta.kv_cache_layout != self.kv_cache_layout
-                or nixl_agent_meta.physical_blocks_per_logical_kv_block
-                != self._physical_blocks_per_logical_kv_block
-                or (nixl_agent_meta.region_group_ids or []) != self.region_group_ids
-            ):
-                raise ValueError(
-                    "NIXL local fast path requires matching cache geometry"
-                )
         if (
             self._supports_pp_hma
             and self.pp_size > 1
@@ -2946,22 +2822,9 @@ class NixlBaseConnectorWorker:
             raise NotImplementedError(
                 "NIXL pull does not yet support a mixed-memory producer"
             )
-        remote_handle = self.nixl_wrapper.prep_xfer_dlist(
+        stage.xfer_side_handles[remote_tp_rank] = self.nixl_wrapper.prep_xfer_dlist(
             remote_agent_name, blocks_data, mem_type=remote_mem_types.pop()
         )
-        stage.xfer_side_handles[remote_tp_rank] = remote_handle
-        if use_local_fastpath:
-            assert local_ipc is not None
-            assert self.local_ipc_driver is not None
-            mapped_bases = tuple(
-                self.local_ipc_driver.open(allocation)
-                for allocation in local_ipc.allocations
-            )
-            self.local_ipc_peers[engine_id, remote_tp_rank] = (
-                local_ipc,
-                mapped_bases,
-            )
-            self.local_ipc_dlists[remote_handle] = blocks_data
 
         return remote_agent_name
 
@@ -3583,7 +3446,6 @@ class NixlBaseConnectorWorker:
         assert self.transfer_topo is not None
         done_sending = self._get_new_notifs()
         done_recving, newly_failed = self._pop_done_transfers(self._recving_transfers)
-        local_fastpath_done = self._pop_done_local_fastpath()
         if newly_failed:
             self._recv_failures.update(newly_failed)
 
@@ -3614,30 +3476,26 @@ class NixlBaseConnectorWorker:
             done_recving.update(failed_recv_reqs)
         # KV read while the remote may have released the blocks must not be used.
         failed_recv_reqs |= self._get_lease_lapsed_recvs(
-            (done_recving | local_fastpath_done) - failed_recv_reqs
+            done_recving - failed_recv_reqs
         )
 
-        completed_recving = done_recving | local_fastpath_done
-        if len(done_sending) > 0 or len(completed_recving) > 0:
+        if len(done_sending) > 0 or len(done_recving) > 0:
             logger.debug(
                 "Rank %s, get_finished: %s requests done sending "
                 "and %s requests done recving (%s failed)",
                 self.tp_rank,
                 len(done_sending),
-                len(completed_recving),
+                len(done_recving),
                 len(failed_recv_reqs),
             )
 
         block_ids_for_blocksize_post_process = defaultdict(list)
         block_ids_for_heterogeneous_attn_post_process = list[list[int]]()
         direct_device_recving = set[str]()
-        reported_recving: set[str] = set()
-        for req_id in completed_recving:
+        for req_id in done_recving:
             # clean up metadata for completed requests
             meta = self._recving_metadata.pop(req_id, None)
             assert meta is not None, f"{req_id} not found in recving_metadata list"
-            if meta.local_fastpath is not True:
-                reported_recving.add(req_id)
 
             # Skip KV sync and post-processing for failed requests
             if req_id in failed_recv_reqs:
@@ -3722,12 +3580,9 @@ class NixlBaseConnectorWorker:
         self._cleanup_remote_engines()
         return KVConnectorTransferResults(
             finished_sending=done_sending,
-            finished_recving=reported_recving,
+            finished_recving=done_recving,
             failed_recving=failed_recv_reqs,
         )
-
-    def _pop_done_local_fastpath(self) -> set[str]:
-        return set()
 
     def get_finished(self) -> tuple[set[str], set[str]]:
         """Compatibility wrapper for the legacy completion API."""
@@ -4420,11 +4275,10 @@ class NixlBaseConnectorWorker:
         it runs, so a transfer that outlives the TTL leaves its engine looking
         idle. A peer that has lost its NIC holds one indefinitely.
         """
-        in_flight = set(list(self._recving_transfers))
-        in_flight.update(getattr(self, "_local_fastpath_transfers", {}))
         return {
             meta.remote.engine_id
-            for req_id in in_flight
+            # Snapshot: push evicts from its writer thread too.
+            for req_id in list(self._recving_transfers)
             if (meta := self._recving_metadata.get(req_id)) is not None
             and meta.remote is not None
         }
@@ -4547,10 +4401,8 @@ class NixlBaseConnectorWorker:
 
         # Notif-only engines (push-mode D side) have no descriptor state.
         for stage in self._remote_stages.pop(engine_id, {}).values():
-            for remote_rank, handle in stage.xfer_side_handles.items():
+            for handle in stage.xfer_side_handles.values():
                 self.nixl_wrapper.release_dlist_handle(handle)
-                self.local_ipc_dlists.pop(handle, None)
-                self.local_ipc_peers.pop((engine_id, remote_rank), None)
         # Pop under the handshake lock; NIXL teardown stays outside it.
         with self._handshake_lock:
             agents = self._remote_agents.pop(engine_id)
@@ -4624,15 +4476,6 @@ class NixlBaseConnectorWorker:
                     self.nixl_wrapper.deregister_memory(desc)
         finally:
             self._registered_descs.clear()
-            local_ipc_driver = getattr(self, "local_ipc_driver", None)
-            if local_ipc_driver is not None:
-                if getattr(self, "_local_fastpath_transfers", None):
-                    with gpu_sync_allowed():
-                        torch.accelerator.synchronize()
-                local_ipc_driver.close()
-                self.local_ipc_driver = None
-            getattr(self, "local_ipc_peers", {}).clear()
-            getattr(self, "local_ipc_dlists", {}).clear()
             # Drop cache references before their owners release registered
             # host memory; handshake futures may outlive model-runner shutdown.
             self.device_kv_caches = {}

@@ -13,10 +13,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.nixl.utils import (
     kv_lease_extension,
 )
 from vllm.logger import init_logger
-from vllm.utils.math_utils import cdiv
-from vllm.v1.core.single_type_kv_cache_manager import MambaManager
-
-from .local_fastpath import get_boot_id
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -37,23 +33,6 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
         kv_cache_config: "KVCacheConfig",
     ):
         super().__init__(vllm_config, engine_id, kv_cache_config)
-        transfer = vllm_config.kv_transfer_config
-        assert transfer is not None
-        self.local_fastpath_enabled = transfer.get_from_extra_config(
-            "enable_local_fastpath", False
-        )
-        if self.local_fastpath_enabled and transfer.kv_buffer_device != "cuda":
-            raise ValueError("NIXL local fast path requires kv_buffer_device='cuda'")
-        self.local_boot_id = get_boot_id() if self.local_fastpath_enabled else None
-
-    def _uses_local_fastpath(self, params: dict[str, Any]) -> bool:
-        marker = params.get("nixl_local_fastpath")
-        return bool(
-            self.local_fastpath_enabled
-            and isinstance(marker, dict)
-            and marker.get("version") == 1
-            and marker.get("boot_id") == self.local_boot_id
-        )
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
@@ -86,7 +65,7 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
             actual = self._get_remote_prefill_token_count(len(token_ids))
             count = actual - num_computed_tokens
             if count > 0:
-                return count, not self._uses_local_fastpath(params)
+                return count, True
 
         if (
             params is not None
@@ -170,55 +149,14 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
                     # a full prefix cache hit on the local node. We need to call
                     # send_notif in _read_blocks to free the memory on the remote node.
 
-                    if self._uses_local_fastpath(params):
-                        # A stream-ordered load shares admission with the next
-                        # forward. Exclude slots allocated for that future work.
-                        imported_tokens = (
-                            self._get_remote_prefill_token_count(
-                                request.num_prompt_tokens
-                            )
-                            if params.get("do_remote_prefill")
-                            else min(
-                                params.get("remote_num_tokens") or 0,
-                                request.num_prompt_tokens,
-                            )
-                        )
-                        import_groups = []
-                        parallel = self.vllm_config.parallel_config
-                        for group, allocated in zip(
-                            self.kv_cache_config.kv_cache_groups,
-                            blocks.blocks,
-                            strict=True,
-                        ):
-                            block_size = group.block_size
-                            if group.dcp_sharded:
-                                block_size *= (
-                                    parallel.decode_context_parallel_size
-                                    * parallel.prefill_context_parallel_size
-                                )
-                            prefix = allocated[: cdiv(imported_tokens, block_size)]
-                            if issubclass(group.manager_cls, MambaManager):
-                                prefix = prefix[-1:]
-                            import_groups.append(prefix)
-                        local_block_ids = self.get_exchange_clipped_blocks(
-                            tuple(
-                                [
-                                    block.block_id
-                                    for block in group
-                                    if block.block_hash is None and not block.is_null
-                                ]
-                                for group in import_groups
-                            )
-                            if num_external_tokens > 0
-                            else (),
-                            clip_ssm=False,
-                        )
-                    else:
-                        local_block_ids = self.get_exchange_clipped_blocks(
-                            blocks.get_unhashed_block_ids_all_groups()
-                            if num_external_tokens > 0
-                            else ()
-                        )
+                    unhashed_local_block_ids: BlockIds = (
+                        blocks.get_unhashed_block_ids_all_groups()
+                        if num_external_tokens > 0
+                        else ()
+                    )
+                    local_block_ids = self.get_exchange_clipped_blocks(
+                        unhashed_local_block_ids
+                    )
                     # Blocks covered by the local prefix cache, per KV cache group.
                     # Each count fixes where that group's DCP slice starts, which the
                     # worker needs to line up with the remote's slice.
@@ -235,15 +173,13 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
 
                     # Get unhashed blocks to pull from remote. Mind that a full prefix
                     # cache hit is indicated with an empty list.
-                    local_fastpath = self._uses_local_fastpath(params)
-                    params["_nixl_local_fastpath_selected"] = local_fastpath
                     self._reqs_need_recv[request.request_id] = (
                         request,
                         local_block_ids,
                         local_num_computed_blocks,
                         # Parked in WAITING_FOR_REMOTE_KVS only when there is
                         # something to pull; a full local hit stays RUNNING.
-                        num_external_tokens > 0 and not local_fastpath,
+                        num_external_tokens > 0,
                     )
 
                 else:
@@ -343,7 +279,7 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
 
             remote_num_tokens = request.num_computed_tokens
 
-        result: dict[str, Any] = dict(
+        return delay_free_blocks, dict(
             do_remote_prefill=is_p_node,
             do_remote_decode=is_d_node,
             remote_block_ids=block_ids,
@@ -363,9 +299,3 @@ class NixlPullConnectorScheduler(NixlBaseConnectorScheduler):
             remote_registration_generation=self._registration_generation,
             transfer_mode=self._TRANSFER_MODE,
         )
-        if is_p_node and self.local_fastpath_enabled:
-            result["nixl_local_fastpath"] = {
-                "version": 1,
-                "boot_id": self.local_boot_id,
-            }
-        return delay_free_blocks, result
