@@ -189,6 +189,16 @@ in different orders; the benchmark compares their scores with the complete
 logits' Top-K. Its warm-cache maximum-rank CUDA event timings measure the selector
 and its exchange, rather than model forward or serving latency.
 
+A controlled H20 TP4/EP4 serving comparison against Nabla commit `1f075a3158`
+used FP8 main KV, BF16 indexer KV, a 4096-token chunk budget, fixed CPU affinity,
+and A/B/B/A repeats. At 131000 input tokens and concurrency 1, the two seeds
+improved output throughput by 2.64% and reduced median TTFT by 2.52% and 2.63%;
+within-arm repeat spread was below 0.3%. All 320 timed requests succeeded,
+with 67/67 quality probes and 8/8 long-context stress checks in each repeat.
+The corresponding H100 standalone and 4P4D groups did not establish a stable
+serving gain. These results do not cover FP8 indexer KV or establish gains
+against later Nabla commits.
+
 ## Parallelism Strategies
 
 vLLM supports multiple parallelism strategies that can be combined to optimize performance across different hardware configurations.
