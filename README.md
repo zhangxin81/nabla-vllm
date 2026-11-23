@@ -19,7 +19,7 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 
 ## 已集成、尚未被上游合入的个人 PR
 
-以下状态核对于 2026-11-22，作者均为 `zhangxin81`。源码版本和下游适配见
+以下状态核对于 2026-11-23，作者均为 `zhangxin81`。源码版本和下游适配见
 [PR 集成记录](docs/design/nabla_vllm_pr_integration.md)。
 
 | PR | 上游状态 | 本仓库保留的能力 | 性能适用范围 |
@@ -45,7 +45,7 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 策略已回退。当前 KV／GDN 的分组、分配、前缀保留和清零／复制恢复到
 原始 vLLM `8e45c458f6`，包含混合模型的块对齐和 GDN 页面 padding，
 同时保留内核优化和 NixlConnector 的 CUDA IPC 路径。
-回退后的源码与原始提交会重新做同配置测试，作为当前默认版本的性能对照。
+回退后的源码与原始提交已完成同配置主矩阵测试，作为当前版本的性能对照。
 历史重构及结果保留在 [v0.1.0](https://github.com/zhangxin81/nabla-vllm/releases/tag/v0.1.0)。
 
 ## 当前完成度
@@ -78,8 +78,44 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 初建 connector 指本仓库集成的 #65639 路径及其安全修正。默认 connector
 对照保留相同的缓存回退、模型和内核优化，独立回退 NIXL 实现。
 两份 nabla 源码的差别限定为 connector 和对应的测试、说明。
-测试结果尚未完成，当前不把缓存回退版本称为已证明的最优性能。
-完成后在此列出吞吐和延迟优势，同时保留回退点。
+主矩阵已完成 **696 个有效测量点、50,240 个计时请求**。
+每个模型的四组实验均包含首轮 39 点，以及第二、三轮各 24 点。
+下表先计算同点三轮均值，再取 24 个相对上游比值的中位数。
+吞吐比越高越好，TTFT／TPOT 比越低越好；各点等权，不能代表生产流量的总收益。
+
+| 模型 | 路径 | 吞吐比 | TTFT p50 比 | TPOT p50 比 | 低于上游点数 | 最低吞吐比 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Qwen3.8-Flash-Next-FP8 | 初建普通 NIXL | 1.0179 | 0.9764 | 0.9881 | 1／24 | 0.9975 |
+| Qwen3.8-Flash-Next-FP8 | 初建 CUDA IPC | 1.0235 | 0.9480 | 0.9920 | 0／24 | 1.0052 |
+| Qwen3.8-Flash-Next-FP8 | 恢复默认 NIXL | 1.0168 | 0.9721 | 0.9889 | 0／24 | 1.0043 |
+| DeepSeek-V4.1-Flash | 初建普通 NIXL | 1.0285 | 1.0041 | 0.9504 | 4／24 | 0.9962 |
+| DeepSeek-V4.1-Flash | 初建 CUDA IPC | 1.0303 | 0.9903 | 0.9510 | 1／24 | 0.9868 |
+| DeepSeek-V4.1-Flash | 恢复默认 NIXL | 1.0279 | 1.0044 | 0.9503 | 5／24 | 0.9563 |
+
+在这组 H100 负载上，Qwen 吞吐比中位数提高约 1.7%～2.3%，DeepSeek 提高约
+2.8%～3.0%。恢复默认 Connector 后仍有相近提升，不能把整个版本的收益归给 IPC。
+DeepSeek 的普通 NIXL TTFT 比中位数略高于上游，TPOT 比中位数约低 5%。
+
+Connector 直接对照同样使用每点三轮均值，结果如下。
+
+| 模型 | 初建普通 NIXL／默认 | 初建 IPC／默认 | 初建 IPC／初建普通 NIXL |
+| --- | --- | --- | --- |
+| Qwen3.8-Flash-Next-FP8 | 1.0003 | 1.0023 | 1.0036 |
+| DeepSeek-V4.1-Flash | 1.0002 | 1.0043 | 1.0037 |
+
+普通 NIXL 的两份 Connector 在这个统计口径下接近持平；IPC 仍显式开启，
+其增益取决于负载。DeepSeek `128／1024、并发 128` 的 IPC 三轮均值为
+2529.56 output tok/s，上游为 2563.35，低 1.32%；相对默认 Connector 的
+2620.69 低 3.48%。默认 Connector 的 `65536／128、并发 8` 比上游低 4.37%，
+吞吐变异系数为 7.52%，该波动和全部原始轮次保留。
+
+[696 点 CSV](docs/benchmarks/nabla-vllm/cache-rollback-all-cases.csv)、
+[48 个复测点的均值与波动](docs/benchmarks/nabla-vllm/cache-rollback-all-repeat-points.csv)、
+[同点饱和吞吐和延迟](docs/benchmarks/nabla-vllm/cache-rollback-matched-saturation.csv)
+及 [Connector 直接对照](docs/benchmarks/nabla-vllm/cache-rollback-connector-pairs.csv)
+保留完整数据。共享前缀 144 点及 8 组边界检查仍在运行，尚不纳入上述结论。
+Qwen 的三组下游串行 token 对照各 24 组均匹配；DeepSeek 分别有
+19／24、18／24、21／24 组不同，严格数值一致性仍未通过。没有进行模型质量评估。
 源码、矩阵、回归命令和证据见 [缓存回退与 Connector 对照](docs/benchmarks/nabla-vllm/h100-cache-rollback-20261122.md)。
 下面的 v0.1.0 数据包含已回退的缓存重构，属于历史记录。
 
