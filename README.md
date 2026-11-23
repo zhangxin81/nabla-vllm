@@ -113,7 +113,30 @@ Connector 直接对照同样使用每点三轮均值，结果如下。
 [48 个复测点的均值与波动](docs/benchmarks/nabla-vllm/cache-rollback-all-repeat-points.csv)、
 [同点饱和吞吐和延迟](docs/benchmarks/nabla-vllm/cache-rollback-matched-saturation.csv)
 及 [Connector 直接对照](docs/benchmarks/nabla-vllm/cache-rollback-connector-pairs.csv)
-保留完整数据。共享前缀 144 点及 8 组边界检查仍在运行，尚不纳入上述结论。
+保留完整数据。缓存开启的共享前缀另完成 144 点、4,224 个计时请求及 8 组边界检查，
+全实验合计 **840 点、54,464 个计时请求**。
+
+共享前缀的同点三轮均值，以下列出并发 32、8192 公共前缀＋256 独立后缀、
+128 输出 tokens 的吞吐；每列都与上游同条件比较。
+
+| 模型 | 上游 shared tok/s | 初建普通 NIXL | 初建 IPC | 默认 NIXL |
+| --- | --- | --- | --- | --- |
+| Qwen3.8-Flash-Next-FP8 | 1636.57 | 1665.07（+1.74%） | 1675.25（+2.36%） | 1675.26（+2.36%） |
+| DeepSeek-V4.1-Flash | 1221.71 | 1256.97（+2.89%） | 1276.23（+4.46%） | 1250.85（+2.39%） |
+
+unique 负载仍有小幅回退：DeepSeek 并发 8 的初建普通 NIXL 比上游低 0.97%。
+默认 Connector 的 DeepSeek shared 并发 32 TTFT p50 比上游高 6.01%，
+吞吐优势需要与延迟一起读。全部并发、模式和各轮波动见
+[前缀逐轮 CSV](docs/benchmarks/nabla-vllm/cache-rollback-prefix-all-cases.csv) 与
+[前缀三轮汇总](docs/benchmarks/nabla-vllm/cache-rollback-prefix-summary.csv)。
+直接 Prefill 边界检查中，四组 Qwen 均命中 8000／8448 tokens，
+四组 DeepSeek 均命中 8192／8448，当前使用原始 vLLM 的 checkpoint 策略。
+
+31 次实际服务启动中，11 次 DeepSeek 退出使用了强制清理，发生在测量完成之后；
+本轮未证明优雅退出通过。完整退出、源文件及数据指纹记录见基线报告。
+[完整逐请求数据与复算脚本](https://github.com/zhangxin81/nabla-vllm/releases/download/v0.1.0/nabla-vllm-cache-rollback-h100-20261123-data.tar.gz)、
+[SHA256 校验文件](https://github.com/zhangxin81/nabla-vllm/releases/download/v0.1.0/SHA256SUMS-cache-rollback-20261123.txt) 已作为补充资产发布；
+历史 v0.1.0 的源码标签和原有数据保持不变。
 Qwen 的三组下游串行 token 对照各 24 组均匹配；DeepSeek 分别有
 19／24、18／24、21／24 组不同，严格数值一致性仍未通过。没有进行模型质量评估。
 源码、矩阵、回归命令和证据见 [缓存回退与 Connector 对照](docs/benchmarks/nabla-vllm/h100-cache-rollback-20261122.md)。
