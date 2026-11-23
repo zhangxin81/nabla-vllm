@@ -11,6 +11,8 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 已减少重复构造；H20／H100 默认覆盖到 1024-token prefill Graph，显式配置优先。
 默认值、缓存失效条件和 Graph padding 的数值边界见
 [SM90 推理配置](docs/configuration/optimization.md#nabla-sm90-graph-coverage-and-host-planning)。
+各项 feature 的组件收益、正式组合的 H20 服务结果和输出差异见
+[输入准备与 CPU 计划优化记录](docs/benchmarks/nabla-vllm/h20-input-host-planning-20261123.md)。
 
 ## 统一算子分桶
 

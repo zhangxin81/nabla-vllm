@@ -57,6 +57,9 @@ retain first-match precedence. Bounds, aliased-span validation and stream/event
 lifetimes remain enforced. See [NIXL usage](../features/nixl_connector_usage.md)
 for the local fast-path prerequisites.
 
+Feature-level evidence, paired H20 serving results and output differences are
+recorded in [the H20 input and host planning benchmark](../benchmarks/nabla-vllm/h20-input-host-planning-20261123.md).
+
 vLLM provides 4 optimization levels (`-O0`, `-O1`, `-O2`, `-O3`) that allow users to trade off startup time for performance:
 
 - `-O0`: No optimizations. Fastest startup time, but lowest performance.
