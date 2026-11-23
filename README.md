@@ -7,6 +7,24 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 我们保留目标模型所需的调度、并行、通信和内核能力，逐步删除无关后端和模型依赖。
 每次裁剪或重构都要能说明它改变了什么，并用同配置的服务基线验证正确性、吞吐和延迟。
 
+## 统一算子分桶
+
+**统一算子分桶是 nabla-vllm 的核心特性之一。** 保留算子的范围判定、配置选择、
+warmup 和分桶标识采用统一接口，为基于分桶的 Agent Kernel 库提供接入基础。
+Python 与 CUDA host 分派使用一致的区间语义。
+
+- **保留原有多维选择。** 各算子沿用自己的阈值，以及 N／K、架构、dtype、
+  head 数、序列长度等原有维度。M 是可用轴之一，各算子无需共用一组 M 边界。
+- **区分执行阶段。** Prefill、Decode、Mixed 和投机验证 Verify 有独立配置入口。
+  阶段来自实际请求元数据，同样的 M 可以属于不同阶段；缺少专用配置时使用原实现。
+- **提供 Agent Kernel 分桶标识。** 标识包含算子、阶段、工作轴、区间和 specialization，
+  供后续内核库注册与选择。公共 CUDA Graph 保留 capture 时的实现和原有 fallback。
+
+接口和保留分派已完成 H20 算子级验证。部分 eager 路径仍有约
+0.31–0.47 微秒／调用的额外 CPU 成本；主干组合后的完整模型 TTFT、TPOT 和吞吐
+尚未完成该特性的回归。设计、覆盖范围、使用示例与检查命令见
+[算子分桶设计](docs/design/operator_kernel_buckets.md)。
+
 ## 为什么维护 nabla-vllm
 
 性能优势是这个代码库的主要目标。我们聚焦两个目标模型、NVIDIA CUDA 和
@@ -53,6 +71,7 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 | 工作 | 状态 |
 | --- | --- |
 | CUDA 平台收口 | 已删除 CPU、ROCm、XPU、TPU、Zen CPU 平台实现与 MoRIIO 的 ROCm P/D 实现；保留 NVIDIA 架构选择 |
+| 统一算子分桶 | Python／CUDA host 区间接口、独立阶段配置、warmup 与 Agent Kernel 分桶标识已落地；保留原有多维阈值 |
 | KV／GDN 缓存管理 | 已恢复原始 vLLM 的共享 BlockPool 和 checkpoint 策略 |
 | NixlConnector CUDA IPC | 保留同机 stream 依赖、源引用生命周期和加载后的续写 |
 | 模型与内核依赖裁剪 | 已删除无关模型和后端实现，保留两个模型及 draft 的依赖闭包 |

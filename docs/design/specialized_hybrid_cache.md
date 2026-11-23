@@ -19,3 +19,7 @@ GDN 算子与 kernel 优化、投影重叠、FP8 和 FlashMLA 改动保留。
 及 [历史 H100 基线](../benchmarks/nabla-vllm/h100-4p4d-20261120.md)。
 历史重构曾出现 DeepSeek cache-enabled unique 请求下的稳定 NIXL 回退；
 当前源码的性能需要用回退后的完整组合重新测量。
+
+算子的范围判定、配置选择与执行阶段由
+[统一分桶接口](operator_kernel_buckets.md) 管理，作为 Agent Kernel 库的接入基础。
+分桶保留原有阈值和多维选择，独立表示 Prefill、Decode、Mixed 与 Verify。
