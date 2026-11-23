@@ -25,7 +25,11 @@ from vllm.distributed import (
     init_distributed_environment,
     initialize_model_parallel,
 )
-from vllm.models.qwen4_exp.nvidia.ops.qsa_indexer import qsa_select_paged_prefill
+from vllm.models.qwen4_exp.nvidia.ops.qsa_indexer import (
+    _prefill_logits,
+    qsa_prefill_logits_width,
+    qsa_select_paged_prefill,
+)
 
 
 def main():
@@ -36,8 +40,10 @@ def main():
     )
     parser.add_argument("--samples", type=int, default=21)
     parser.add_argument("--warmup", type=int, default=8)
+    parser.add_argument("--page-size", type=int, default=208)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    assert args.page_size > 0 and args.samples > 0 and args.warmup > 0
     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     torch.accelerator.set_device_index(int(os.environ["LOCAL_RANK"]))
     torch.set_num_threads(1)
@@ -55,10 +61,10 @@ def main():
                     if rows > context:
                         continue
                     torch.manual_seed(0)
-                    pages = (context // 4 + 207) // 208
+                    pages = (context // 4 + args.page_size - 1) // args.page_size
                     q = torch.randn(rows, 4, 128, dtype=torch.bfloat16, device="cuda")
                     cache = torch.randn(
-                        pages, 208, 1, 128, dtype=q.dtype, device=q.device
+                        pages, args.page_size, 1, 128, dtype=q.dtype, device=q.device
                     )
                     table = torch.arange(pages, dtype=torch.int32, device=q.device)[
                         None
@@ -74,6 +80,24 @@ def main():
                         // 4
                     )
                     out = torch.empty(rows, 512, dtype=torch.int32, device=q.device)
+                    width = qsa_prefill_logits_width(context, 4, pages * args.page_size)
+                    reference_logits = _prefill_logits(
+                        q,
+                        cache,
+                        table,
+                        starts,
+                        visible,
+                        torch.empty(rows * width, dtype=torch.float32, device=q.device),
+                        rows,
+                        width,
+                        0,
+                        rows,
+                    )
+                    columns = torch.arange(width, device=q.device)[None, :]
+                    reference_logits.masked_fill_(
+                        columns >= visible[:, None], -torch.inf
+                    )
+                    reference_scores = reference_logits.topk(512).values.sort().values
                     for epoch, shard in enumerate((False, True, True, False)):
                         call = partial(
                             qsa_select_paged_prefill,
@@ -93,6 +117,16 @@ def main():
                         for _ in range(args.warmup):
                             call()
                         torch.accelerator.synchronize()
+                        assert ((out >= -1) & (out < visible[:, None])).all()
+                        ordered = out.sort().values
+                        assert not (
+                            (ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)
+                        ).any()
+                        scores = reference_logits.gather(1, out.clamp_min(0).long())
+                        scores.masked_fill_(out < 0, -torch.inf)
+                        torch.testing.assert_close(
+                            scores.sort().values, reference_scores, rtol=0, atol=0
+                        )
                         begin = torch.cuda.Event(enable_timing=True)
                         end = torch.cuda.Event(enable_timing=True)
                         samples = []
@@ -135,6 +169,7 @@ def main():
                             "tp": world,
                             "gpu": torch.cuda.get_device_name(),
                             "logits_mb": envs.VLLM_SPARSE_INDEXER_MAX_LOGITS_MB,
+                            "page_size": args.page_size,
                             "scope": (
                                 "warm-cache selector plus production all-gather; "
                                 "maximum-rank CUDA event time"

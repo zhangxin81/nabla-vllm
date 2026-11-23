@@ -137,6 +137,22 @@ On a single NVIDIA SM90 node with tensor parallel size 4 or 8 and the multiproce
 
 Decode remains unchanged. DCP, PCP, batch-invariant execution, disabled PyNCCL, NCCL symmetric-memory collectives, and FULL graphs for mixed batches retain replicated selection. The optimization adds no CLI option; changing the prefill token budget affects scheduling independently of this optimization.
 
+The standalone selector benchmark accepts the physical compressed-cache page
+size, checks valid non-duplicate indices and exact selected scores before timing,
+and includes the final TP exchange:
+
+```bash
+.venv/bin/python -m torch.distributed.run --standalone --nproc-per-node=4 \
+  benchmarks/kernels/benchmark_qsa_tp_prefill.py \
+  --page-size 400 --rows 4096 8192 --contexts 65536 131072 \
+  --output qsa-tp-prefill.json
+```
+
+Use the page size from the deployed cache layout. Top-K indices can be returned
+in different orders; the benchmark compares their scores with the complete
+logits' Top-K. Its warm-cache maximum-rank CUDA event timings measure the selector
+and its exchange, rather than model forward or serving latency.
+
 ## Parallelism Strategies
 
 vLLM supports multiple parallelism strategies that can be combined to optimize performance across different hardware configurations.
