@@ -25,7 +25,7 @@ be resumed; it does not set the physical page width. See
 
 For Qwen3.8-Flash-Next (`qwen4_exp`) and DeepSeek-V4.1-Flash
 (`deepseek_v41`) on H20/H100, the default prefill CUDA graph limit is
-1024 tokens, capped by `max_num_batched_tokens`. Uniform decode graphs retain
+1024 tokens, capped by `max_num_batched_tokens`. Uniform decode graphs use
 a 512-token budget and use the request-count grid. SM100 keeps its existing
 8192-token defaults. Explicit compilation settings take precedence.
 
