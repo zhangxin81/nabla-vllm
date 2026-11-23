@@ -2259,3 +2259,51 @@ def test_null_head_len():
         assert null_head_len(table) == expected
     blocks = KVCacheBlocks(([null] * 4 + real, [null] + real[:1] + [null]))
     assert blocks.get_unhashed_block_ids_all_groups() == [[1, 2, 3], [1]]
+
+
+@pytest.mark.cpu_test
+@pytest.mark.parametrize("prefix_caching", [False, True])
+def test_qwen_hybrid_alignment_pads_state_pages_to_attention_pages(
+    tmp_path, prefix_caching
+):
+    """The shared pool must give GDN and attention the same physical page size."""
+    from transformers import Qwen4ExpConfig, Qwen4ExpTextConfig
+
+    from tests.v1.kv_connector.unit.utils import (
+        create_vllm_config,
+        scheduler_test_model,
+    )
+    from vllm.model_executor.models import ModelRegistry
+    from vllm.platforms.interface import Platform
+    from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
+
+    text = Qwen4ExpTextConfig.from_pretrained(
+        scheduler_test_model().name, local_files_only=True
+    )
+    text.layer_types = ["linear_attention", "full_attention"]
+    checkpoint = Qwen4ExpConfig(text_config=text.to_dict())
+    checkpoint.architectures = ["Qwen4ExpForCausalLM"]
+    checkpoint.save_pretrained(tmp_path)
+    config = create_vllm_config(
+        model=str(tmp_path), block_size=64, max_model_len=131072, dtype="bfloat16"
+    )
+    config.cache_config.kv_cache_layout = "BLNHC"
+    config.cache_config.enable_prefix_caching = prefix_caching
+    model, _ = ModelRegistry.resolve_model_cls(
+        config.model_config.architecture, model_config=config.model_config
+    )
+    largest_state_page = max(
+        spec.page_size_bytes for spec in model.get_mamba_specs_from_config(config)
+    )
+    assert largest_state_page > 0
+    Platform._align_hybrid_block_size(config, TritonAttentionBackend)
+    attention_page = AttentionSpec(
+        block_size=config.cache_config.block_size,
+        num_kv_heads=config.model_config.get_num_kv_heads(config.parallel_config),
+        head_size=config.model_config.get_head_size(),
+        dtype=config.model_config.dtype,
+    ).page_size_bytes
+    assert attention_page >= largest_state_page
+    assert (
+        config.cache_config.mamba_page_size_padded or largest_state_page
+    ) == attention_page

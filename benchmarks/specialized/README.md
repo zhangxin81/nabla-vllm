@@ -22,8 +22,7 @@ arguments. At minimum the runner consumes this model mapping:
     "deepseek": {
       "weight_path": "/models/deepseek",
       "tokenizer_mode": "deepseek_v41"
-    },
-    "qwen_fp8_additional": {"weight_path": "/models/qwen-fp8-additional"}
+    }
   }
 }
 ```
@@ -37,15 +36,21 @@ sources, checkpoints or other experiment conditions change:
   --model qwen --arm upstream_nixl --round 1
 ```
 
-Repeat for the candidate NIXL and candidate IPC arms and all three model
-checkpoints. Round 1 has 39 cases. Rounds 2 and 3 select concurrency 1, 8 and
+The current cache-rollback comparison uses two distinct checkpoints and four
+arms: `upstream_nixl`, `nabla_initial_nixl`, `nabla_initial_ipc` and
+`nabla_default_nixl`. The two historical Qwen FP8 directories have identical
+weight fingerprints; they do not define different model precisions. Record
+each arm's source SHA and connector settings in the manifest.
+
+Repeat for all four arms and both models. Round 1 has 39 cases per arm/model.
+Rounds 2 and 3 select concurrency 1, 8 and
 the smallest concurrency reaching 95% of the upstream round-1 peak for each
 input/output shape. The selected points are shared across arms.
 
 ```bash
 .venv/bin/python benchmarks/specialized/serve_matrix.py \
   --manifest experiment.json --output-root results/new-experiment \
-  --model qwen --arm candidate_ipc --round 2
+  --model qwen --arm nabla_initial_ipc --round 2
 ```
 
 `--dry-run` prints commands without sending requests or writing results.

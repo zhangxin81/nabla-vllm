@@ -19,7 +19,7 @@ from vllm.sampling_params import SamplingParams
 from vllm.v1.attention.backends.mla.cpu_mla import CPUMLABackend
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager, MambaManager
-from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec, MLAAttentionSpec
+from vllm.v1.kv_cache_interface import MambaSpec, MLAAttentionSpec
 from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
 from vllm.v1.worker.utils import AttentionGroup
 
@@ -259,97 +259,6 @@ def test_bench_speculative_mamba_blocks():
     for state in caches["state"]:
         assert torch.equal(state[0], torch.ones_like(state[0]))
         assert torch.count_nonzero(state[1:]) == 0
-
-
-@pytest.fixture(params=[False, True])
-def native_cache_config(request):
-    kv_spec = MLAAttentionSpec(
-        block_size=4, num_kv_heads=1, head_size=2, dtype=torch.float32
-    )
-    state_spec = MambaSpec(block_size=4, shapes=((16,),), dtypes=(torch.float32,))
-    specs = [kv_spec, state_spec]
-    if request.param:
-        specs.reverse()
-    groups = [new_kv_cache_group([f"cache{i}"], spec) for i, spec in enumerate(specs)]
-    strides = tuple(spec.page_size_bytes for spec in specs)
-    return KVCacheConfig(
-        num_blocks=16,
-        kv_cache_tensors=[],
-        kv_cache_groups=groups,
-        pool_block_strides=strides,
-        arena_size_bytes=512,
-    )
-
-
-def test_bench_native_cache_byte_ownership(native_cache_config):
-    """Initialize and restore disjoint KV/state bytes without touching neighbors."""
-    config = native_cache_config
-    groups = config.kv_cache_groups
-    specs = [group.distinct_specs[0] for group in groups]
-    strides = config.pool_block_strides
-    batch = build_batch(
-        parse_case("mix=1@2,17"),
-        groups,
-        config.num_blocks,
-        1000,
-        np.random.default_rng(0),
-        kv_cache_config=config,
-    )
-    spans = sorted(
-        (block_id * stride, (block_id + 1) * stride)
-        for req in batch.scheduler_output.scheduled_new_reqs
-        for stride, ids in zip(strides, req.block_ids)
-        for block_id in ids
-        if block_id
-    )
-    assert spans[0][0] >= max(strides)
-    assert all(end <= start for (_, end), (start, _) in zip(spans, spans[1:]))
-    assert spans[-1][1] <= config.arena_size_bytes
-    assert sum(end - start for start, end in spans) == 320
-    assert any(
-        any(b != a + 1 for a, b in zip(ids, ids[1:]))
-        for req in batch.scheduler_output.scheduled_new_reqs
-        for ids in req.block_ids
-    )
-
-    storage = torch.ones(128, dtype=torch.float32)
-    caches, attn_groups = {}, []
-    for i, spec in enumerate(specs):
-        capacity = config.num_blocks_for_group(i)
-        if isinstance(spec, MambaSpec):
-            caches[f"cache{i}"] = storage.as_strided((capacity, 16), (16, 1))
-            backend = MambaAttentionBackendEnum.MAMBA2.get_class()
-        else:
-            caches[f"cache{i}"] = storage.as_strided((capacity, 1, 4, 2), (8, 8, 2, 1))
-            backend = CPUMLABackend
-        attn_groups.append(AttentionGroup(backend, [f"cache{i}"], spec, i))
-    zero_kv_blocks(caches, attn_groups, batch, config.num_blocks)
-    owned = torch.zeros(128, dtype=torch.bool)
-    for start, end in spans:
-        owned[start // 4 : end // 4] = True
-    assert storage[owned].count_nonzero() == 0
-    assert (storage[~owned] == 1).all()
-    views = touched_kv_views(caches, attn_groups, batch, config.num_blocks, 1)
-    snapshots = [view.clone() for view in views]
-    storage[owned] = 7
-    for view, saved in zip(views, snapshots):
-        view.copy_(saved)
-    assert storage[owned].count_nonzero() == 0
-    assert (storage[~owned] == 1).all()
-
-
-def test_bench_native_cache_rejects_oversized_case(native_cache_config):
-    """Reject native cases that exceed physical bytes despite valid virtual IDs."""
-    config = native_cache_config
-    with pytest.raises(ValueError, match="byte budget"):
-        build_batch(
-            parse_case("decode=4*1@9"),
-            config.kv_cache_groups,
-            config.num_blocks,
-            1000,
-            np.random.default_rng(0),
-            kv_cache_config=config,
-        )
 
 
 @pytest.mark.parametrize("capacity", [0, 2])

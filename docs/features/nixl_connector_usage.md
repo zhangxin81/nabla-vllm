@@ -82,35 +82,27 @@ mkdir -p /dev/nvidia-caps-imex-channels
 mknod /dev/nvidia-caps-imex-channels/channel0 c "$major" 0
 ```
 
-Check the transport with `UCX_PROTO_INFO=y`: KV reads should show `cuda_ipc`, not `tcp`. Transfers across hosts use RDMA and need no channel. The target-model arena still requires `--disable-extensible-kv-cache`.
+Check the transport with `UCX_PROTO_INFO=y`: KV reads should show `cuda_ipc`, not `tcp`. Transfers across hosts use RDMA and need no channel.
 
 ## Basic Usage (on the same host)
 
-### Native KV pages and recurrent-state slots
+### Upstream cache ownership
 
-The target models use independent pool-local IDs over a stable CUDA allocation.
-Attention groups allocate token pages; GDN and PLE groups allocate state slots.
-One arena accounts for their actual backing byte ranges, including alignment,
-active requests, copies and transfers. Checkpoint retention selects committed
-logical token positions separately from physical slot allocation.
+KV and GDN allocation, grouping and checkpoint retention use the original vLLM
+shared block pool. The independent native-stride arena has been reverted.
+NIXL protocol **20** restores that geometry while retaining optional same-host
+CUDA IPC metadata. P and D must run the same downstream protocol and compatible
+cache layouts; v0.1.0 protocol 19 peers cannot be mixed with this revision.
 
-NIXL protocol **19** advertises every region's native capacity and stride.
-Producer and consumer must run the same protocol and compatible group geometry;
-P and D capacities may differ without imposing a fixed page-to-state ratio.
-An imported prefix includes its terminal recurrent state. Its first writable
-decode state is reserved in the same admission plan, and speculative scratch
-columns are excluded from the imported prefix by logical position. The source
-retains its allocation until the transfer and its notification complete.
+Ordinary NIXL pull uses upstream block selection. Stream-ordered IPC loads
+import only the completed prefix and its terminal recurrent state, excluding
+slots reserved for the following decode. Transfer references remain live until
+the copy and source notification complete. IPC requires stable allocations and
+`--disable-extensible-kv-cache`.
 
-The independent arena requires a block-outermost layout and disables extensible
-KV allocation, including on cross-host transfers. CUDA graph views keep stable
-addresses. The index IDs remain internal and are never used as GPU or NIXL IDs.
-See [cache ownership](../design/specialized_hybrid_cache.md) for admission,
-checkpoint, copy-on-write and reclamation invariants.
-
-The measured topology is 8 H100s with 4 prefill GPUs and 4 decode GPUs, TP=4
-and EP=4 on each side. Refer to the [baseline](../benchmarks/nabla-vllm/h100-4p4d-20261120.md)
-for exact model-specific kernel settings and validation boundaries.
+The controlled topology remains 8 H100s, four prefill and four decode GPUs,
+TP=4 and EP=4 per role. Historical v0.1.0 results are kept separately from the
+cache-rollback baseline.
 
 ### Stream-ordered local CUDA IPC
 

@@ -284,12 +284,10 @@ class CacheConfig:
       reproducible hashing. Requires the optional `xxhash` package."""
     prefix_cache_retention_interval: int | None = Field(default=0, ge=0)
     """Token interval between retained sliding-window and Mamba prefix-cache
-    checkpoints. `0` retains semantic checkpoints, including the latest
-    replay boundary and shared-prefix junctions. Native pools also keep states
-    and sliding-window coverage at completed prefill chunk boundaries so a
-    different prompt suffix can reuse the preceding checkpoint. Positive values
-    additionally retain periodic checkpoints at the specified interval, which
-    must be a multiple of the scheduler block size. `None` retains checkpoints densely.
+    checkpoints. `0` retains only semantic checkpoints, including the latest
+    replay boundary and shared-prefix junctions. Positive values additionally
+    retain periodic checkpoints at the specified interval, which must be a
+    multiple of the scheduler block size. `None` retains checkpoints densely.
     Applies only to sliding-window and Mamba cache groups."""
     kv_cache_dtype_skip_layers: list[str] = field(default_factory=list)
     """Layer patterns to skip KV cache quantization. Accepts layer indices

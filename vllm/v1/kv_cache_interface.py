@@ -861,27 +861,6 @@ class KVCacheConfig:
     kv_tp_replicas: int = 1
     """Consecutive TP ranks holding identical KV for every layer (1: none)."""
 
-    pool_block_strides: tuple[int, ...] | None = None
-    """Native bytes per slot in each group of an independently addressed arena."""
-
-    arena_size_bytes: int = 0
-    """Shared backing size for independently addressed resource pools."""
-
-    @property
-    def arena_unit_bytes(self) -> int:
-        from math import gcd
-
-        assert self.pool_block_strides is not None
-        return gcd(*self.pool_block_strides)
-
-    def num_blocks_for_group(self, group_id: int) -> int:
-        if self.pool_block_strides is not None:
-            return self.arena_size_bytes // self.pool_block_strides[group_id]
-        if self.kv_cache_groups[group_id].host_resident:
-            assert self.hisparse_host_num_blocks is not None
-            return self.hisparse_host_num_blocks
-        return self.num_blocks
-
     needs_kv_cache_zeroing: bool = field(init=False)
     """Whether newly allocated attention blocks must be zeroed before use.
 
@@ -957,13 +936,6 @@ class KVCacheConfig:
     def num_blocks_of(self, tensor: KVCacheTensor) -> int:
         """Number of blocks addressable by the pool backing `tensor`."""
         if not tensor.host_resident:
-            if self.pool_block_strides is not None:
-                group_id = next(
-                    i
-                    for i, g in enumerate(self.kv_cache_groups)
-                    if tensor.layers[0] in g.kv_cache_specs
-                )
-                return self.num_blocks_for_group(group_id)
             return self.num_blocks
         assert self.hisparse_host_num_blocks is not None
         return self.hisparse_host_num_blocks

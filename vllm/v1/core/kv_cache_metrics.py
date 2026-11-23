@@ -59,24 +59,17 @@ class KVCacheMetricsCollector:
     def should_sample_block(self) -> bool:
         return random.random() < self.sample_rate
 
-    @staticmethod
-    def _block_key(block: "KVCacheBlock") -> int:
-        pool = block.pool() if block.pool is not None else None
-        if pool is not None and pool.memory_arena is not None:
-            return pool.cached_block_hash_to_block._offset + block.block_id
-        return block.block_id
-
     def on_block_allocated(self, block: "KVCacheBlock") -> None:
         if self.should_sample_block():
-            self.block_metrics[self._block_key(block)] = BlockMetricsState()
+            self.block_metrics[block.block_id] = BlockMetricsState()
 
     def on_block_accessed(self, block: "KVCacheBlock") -> None:
-        metrics = self.block_metrics.get(self._block_key(block))
+        metrics = self.block_metrics.get(block.block_id)
         if metrics:
             metrics.record_access()
 
     def on_block_evicted(self, block: "KVCacheBlock") -> None:
-        metrics = self.block_metrics.pop(self._block_key(block), None)
+        metrics = self.block_metrics.pop(block.block_id, None)
         if not metrics:
             return
 

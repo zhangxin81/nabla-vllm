@@ -3,7 +3,6 @@
 """Inference-only Qwen4Exp model."""
 
 from collections.abc import Iterable
-from dataclasses import replace
 from itertools import islice
 
 import torch
@@ -39,7 +38,6 @@ from vllm.model_executor.models.interfaces import (
     MixtureOfExperts,
     MultiModalEmbeddings,
     SupportsHCSP,
-    SupportsKVCacheGrouping,
     SupportsLoRA,
     SupportsMRoPE,
     SupportsPP,
@@ -84,7 +82,7 @@ from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.tokenizers.registry import cached_tokenizer_from_config
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
-from vllm.v1.kv_cache_interface import KVCacheGroup, KVCacheLayerConfig, MambaSpec
+from vllm.v1.kv_cache_interface import MambaSpec
 
 from ..common.hyperconnection import is_hc_sequence_parallel_enabled
 from .hyperconnection import GatedResidual, HyperConnectionConfig
@@ -775,95 +773,6 @@ class Qwen4ExpModel(nn.Module):
         return loaded
 
 
-class Qwen4ExpKVCacheGrouping(SupportsKVCacheGrouping):
-    """The default grouping, with the PLE layer's short-conv state folded into
-    the narrowest GDN group.
-
-    On its own, the small PLE state takes whole blocks sized for the widest
-    group (the QSA KV) and wastes nearly all of them, while the GDN groups
-    share its block table. It is folded even into a full block, which then
-    grows by its page, so that the grouping does not depend on the TP size:
-    P/D peers must group alike.
-    """
-
-    @classmethod
-    def get_kv_cache_groups(
-        cls,
-        vllm_config: VllmConfig,
-        layer_configs: dict[str, KVCacheLayerConfig],
-    ) -> list[KVCacheGroup]:
-        from vllm.v1.core.kv_cache_planning import get_kv_cache_groups
-
-        groups = get_kv_cache_groups(vllm_config, layer_configs)
-        if (
-            vllm_config.model_config is not None
-            and getattr(vllm_config.model_config.hf_config, "model_type", None)
-            == "qwen4_exp"
-        ):
-            # GDN layers advance together, so one slot contains their states.
-            combined: dict[object, KVCacheGroup] = {}
-            for group in groups:
-                if not all(
-                    isinstance(spec, MambaSpec)
-                    and spec.mamba_type != MambaAttentionBackendEnum.SHORT_CONV
-                    for spec in group.kv_cache_specs.values()
-                ):
-                    combined[id(group)] = group
-                    continue
-                key = (
-                    group.manager_config,
-                    group.block_size,
-                    group.dcp_sharded,
-                    any(layer_configs[n].is_draft for n in group.layer_names),
-                )
-                if key in combined:
-                    previous = combined[key]
-                    combined[key] = replace(
-                        previous,
-                        kv_cache_specs=previous.kv_cache_specs | group.kv_cache_specs,
-                    )
-                else:
-                    combined[key] = group
-            groups = list(combined.values())
-        ple = next(
-            (
-                group
-                for group in groups
-                if all(
-                    isinstance(spec, MambaSpec)
-                    and spec.mamba_type == MambaAttentionBackendEnum.SHORT_CONV
-                    for spec in group.kv_cache_specs.values()
-                )
-            ),
-            None,
-        )
-        if ple is None:
-            return groups
-        gdn = min(
-            (
-                group
-                for group in groups
-                if group is not ple
-                and group.manager_config == ple.manager_config
-                and group.block_size == ple.block_size
-            ),
-            key=lambda group: group.page_size_bytes,
-            default=None,
-        )
-        if gdn is None:
-            return groups
-        # The PLE page was padded only to fill a block on its own.
-        ple_specs = {
-            name: replace(spec, page_size_padded=None)
-            for name, spec in ple.kv_cache_specs.items()
-            if isinstance(spec, MambaSpec)
-        }
-        folded = replace(gdn, kv_cache_specs=gdn.kv_cache_specs | ple_specs)
-        return [
-            folded if group is gdn else group for group in groups if group is not ple
-        ]
-
-
 class Qwen4ExpForCausalLM(
     nn.Module,
     HasInnerState,
@@ -873,7 +782,6 @@ class Qwen4ExpForCausalLM(
     SupportsPP,
     Qwen4ExpMixtureOfExperts,
     IsHybrid,
-    Qwen4ExpKVCacheGrouping,
 ):
     # The QSA indexer is not listed: quant configs read this mapping before the
     # model is built, and `Qwen4ExpQSAAttention` fuses `indexer.index_qk_proj`
@@ -1122,7 +1030,6 @@ class Qwen4ExpForConditionalGeneration(
     HasInnerState,
     SupportsHCSP,
     Qwen4ExpMixtureOfExperts,
-    Qwen4ExpKVCacheGrouping,
 ):
     """Qwen3-VL vision tower backed by the Qwen4Exp language model."""
 
