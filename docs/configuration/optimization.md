@@ -21,6 +21,42 @@ be resumed; it does not set the physical page width. See
 
 ## Optimization Levels
 
+### Nabla SM90 graph coverage and host planning
+
+For Qwen3.8-Flash-Next (`qwen4_exp`) and DeepSeek-V4.1-Flash
+(`deepseek_v41`) on H20/H100, the default prefill CUDA graph limit is
+1024 tokens, capped by `max_num_batched_tokens`. Uniform decode graphs use
+a 512-token budget and use the request-count grid. SM100 keeps its existing
+8192-token defaults. Explicit compilation settings take precedence.
+
+More graph coverage reduces repeated host work for large prefill chunks but
+uses additional capture memory and startup time. To retain a smaller prefill
+limit, use the existing configuration:
+
+```bash
+vllm serve /path/to/model \
+  --compilation-config '{"max_prefill_cudagraph_capture_tokens":512}'
+```
+
+Graph padding can change kernel selection and floating-point results. For
+example, Qwen HC down+SiLU fusion supports at most 48 padded rows: 33 requests
+padded to 40 retain it, while padding to 64 selects another implementation.
+Evaluate the intended request shapes and model accuracy when changing grids.
+
+PLE history and request offsets are prepared by one integer staging kernel.
+Workspace views are reused only after locking, separately per microbatch and
+lane, and discarded on unlock or growth. Humming buffer plans are immutable,
+bounded per expert instance, and keyed by shape, dtype, activation and dispatch
+capacity. Attention builders reuse CPU query lengths within one batch; request
+offset replacement invalidates them. These paths preserve rollback and cache
+ownership. Engram's hardware and offloaded-weight storage checks remain active.
+
+The same-host NIXL CUDA IPC path indexes registered peer address ranges once.
+Peer cleanup or re-registration discards the plan; overlapping registrations
+retain first-match precedence. Bounds, aliased-span validation and stream/event
+lifetimes remain enforced. See [NIXL usage](../features/nixl_connector_usage.md)
+for the local fast-path prerequisites.
+
 vLLM provides 4 optimization levels (`-O0`, `-O1`, `-O2`, `-O3`) that allow users to trade off startup time for performance:
 
 - `-O0`: No optimizations. Fastest startup time, but lowest performance.

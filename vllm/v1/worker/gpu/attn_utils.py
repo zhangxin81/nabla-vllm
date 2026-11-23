@@ -505,6 +505,7 @@ def build_attn_metadata(
 
     attn_metadata: dict[str, Any] = {}
     token_to_req_indices: torch.Tensor | None = None
+    query_lens_cpu: torch.Tensor | None = None
     # Mamba groups with the same spec and builder differ only in their state
     # indices, so later groups re-gather those from the first group's metadata.
     # Also at capture, so FULL graphs share the batch-level buffers.
@@ -557,6 +558,7 @@ def build_attn_metadata(
             rswa_prefix_lens=rswa_prefix_lens,
             req_idx=req_idx,
             _token_to_req_indices_cache=token_to_req_indices,
+            _query_lens_cpu_cache=query_lens_cpu,
             **common_attn_metadata_extra_kwargs,
         )
 
@@ -592,4 +594,5 @@ def build_attn_metadata(
             for layer_name in attn_group.layer_names:
                 attn_metadata[layer_name] = metadata
         token_to_req_indices = common_attn_metadata._token_to_req_indices_cache
+        query_lens_cpu = common_attn_metadata._query_lens_cpu_cache
     return attn_metadata

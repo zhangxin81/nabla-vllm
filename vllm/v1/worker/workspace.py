@@ -83,6 +83,9 @@ class WorkspaceManager:
             None for _ in self._current_workspaces
         ]
         self._locked: bool = False
+        self._views: list[dict[tuple, tuple[tuple[torch.Tensor, ...], int]]] = [
+            {} for _ in self._current_workspaces
+        ]
 
     @staticmethod
     def _workspace_size_bytes(workspace: torch.Tensor | None) -> int:
@@ -115,6 +118,8 @@ class WorkspaceManager:
         needs to grow due to changes in the number of experts.
         """
         self._locked = False
+        for views in self._views:
+            views.clear()
         if envs.VLLM_DEBUG_WORKSPACE:
             logger.info(
                 "[WORKSPACE DEBUG] Workspace unlocked. Current sizes: %s",
@@ -202,6 +207,17 @@ class WorkspaceManager:
             List of tensor views into the workspace buffer, one per shape/dtype pair.
 
         """
+        workspace_id = self._get_workspace_id()
+        cached = (
+            self._views[workspace_id].get(shapes_and_dtypes) if self._locked else None
+        )
+        if cached is not None:
+            cached_views, total_bytes = cached
+            retained = self._retained[workspace_id]
+            if retained is not None and total_bytes > retained[1]:
+                self._retained[workspace_id] = None
+            return [view.detach() for view in cached_views]
+
         actual_bytes = [_compute_bytes(s, d) for s, d in shapes_and_dtypes]
         aligned_bytes = [round_up(actual, _VIEW_ALIGNMENT) for actual in actual_bytes]
         total_bytes = sum(aligned_bytes)
@@ -215,12 +231,21 @@ class WorkspaceManager:
         if retained is not None and total_bytes > retained[1]:
             self._retained[workspace_id] = None
 
-        return [
+        views = [
             current_workspace[offsets[i] : offsets[i] + actual_bytes[i]]
             .view(shapes_and_dtypes[i][1])
             .reshape(shapes_and_dtypes[i][0])
             for i in range(len(shapes_and_dtypes))
         ]
+        if self._locked:
+            cache = self._views[workspace_id]
+            if len(cache) >= 64:
+                cache.clear()
+            cache[shapes_and_dtypes] = (
+                tuple(view.detach() for view in views),
+                total_bytes,
+            )
+        return views
 
     def get_retained(
         self, key: Hashable, shape: tuple[int, ...], dtype: torch.dtype
@@ -299,6 +324,7 @@ class WorkspaceManager:
             # Resizing all ubatches here would orphan the other ubatch's
             # old tensor when it still holds views into it (DBO leak).
             self._current_workspaces[workspace_id] = None
+            self._views[workspace_id].clear()
             self._retained[workspace_id] = None
             del current_workspace
             # Release the freed segment back to CUDA so the caching

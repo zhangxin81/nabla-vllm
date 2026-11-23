@@ -80,6 +80,17 @@ from vllm.v1.worker.utils import (
 )
 
 
+def test_query_lengths_are_reused_only_for_unchanged_request_offsets():
+    metadata = create_common_attn_metadata(BatchSpec([8, 10, 0], [1, 3, 0]), 16, "cpu")
+    lengths = metadata.query_lens_cpu()
+    assert lengths.tolist() == [1, 3, 0]
+    assert metadata.query_lens_cpu() is lengths
+    assert metadata.replace(causal=False).query_lens_cpu() is lengths
+    changed = metadata.replace(query_start_loc_cpu=torch.tensor([0, 2, 3, 3]))
+    assert changed.query_lens_cpu().tolist() == [2, 1, 0]
+    assert changed.query_lens_cpu() is not lengths
+
+
 @pytest.mark.parametrize(
     ("enabled", "block_size", "main_sizes", "indexer_sizes", "expected", "indexer"),
     [
@@ -162,7 +173,7 @@ def test_get_kv_cache_layer_configs_resolves_hisparse_block_size(
     assert all(spec.block_size == block_size for spec in specs.values())
 
 
-def test_resolve_hisparse_specs_before_kv_cache_layout():
+def test_resolve_hisparse_specs_before_kv_cache_layout(tmp_path):
     """Workers derive HiSparse's resident/hot specs before the engine core
     resolves the KV cache layout, even when the other layers have mixed page
     sizes, and derive the specs the engine core lays out."""
@@ -210,7 +221,16 @@ def test_resolve_hisparse_specs_before_kv_cache_layout():
         get_supported_kernel_block_sizes=lambda _=None: [64],
     )
     layers = {name: SimpleNamespace(get_attn_backend=lambda: backend) for name in specs}
-    vllm_config = VllmConfig(model_config=ModelConfig(max_model_len=8192))
+    from transformers import Qwen4ExpTextConfig
+
+    Qwen4ExpTextConfig(
+        architectures=["Qwen4ExpForCausalLM"],
+        ple_layer_ids=[],
+        max_position_embeddings=8192,
+    ).save_pretrained(tmp_path)
+    vllm_config = VllmConfig(
+        model_config=ModelConfig(model=str(tmp_path), max_model_len=8192)
+    )
     vllm_config.attention_config.hisparse_config = HiSparseConfig()
     vllm_config.cache_config.enable_prefix_caching = False
     assert vllm_config.cache_config.kv_cache_layout is None

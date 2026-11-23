@@ -10,21 +10,19 @@ import pytest
 import torch
 from transformers import Qwen4ExpConfig, Qwen4ExpTextConfig
 
-from vllm.config import CacheConfig, ParallelConfig
 from vllm.config.speculative import SpeculativeConfig
 from vllm.engine.arg_utils import EngineArgs
 from vllm.model_executor.layers.quantization.compressed_tensors.utils import (
     should_ignore_layer,
-)
-from vllm.model_executor.models.config import (
-    Qwen4ExpForConditionalGenerationConfig,
 )
 from vllm.models.qwen4_exp.nvidia.model import (
     Qwen4ExpForCausalLM,
     Qwen4ExpForConditionalGeneration,
 )
 from vllm.models.qwen4_exp.nvidia.model_state import Qwen4ExpModelState
-from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
+from vllm.platforms import current_platform
+from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+from vllm.v1.worker.gpu.states import RequestState
 
 from ...utils import spawn_new_process_for_each_test
 
@@ -57,6 +55,76 @@ def _text_config(**kwargs) -> Qwen4ExpTextConfig:
     return Qwen4ExpTextConfig(**values)
 
 
+def _ple_state(tmp_path, depth):
+    config = _text_config(
+        architectures=["Qwen4ExpForCausalLM"],
+        vocab_size=128,
+        eos_token_id=99,
+        ngram_size=depth + 1,
+        heads_per_ngram=1,
+        ple_embed_dim=depth * 8,
+    )
+    config.save_pretrained(tmp_path)
+    vllm_config = EngineArgs(
+        model=str(tmp_path),
+        max_model_len=8,
+        max_num_seqs=8,
+        max_num_batched_tokens=32,
+        skip_tokenizer_init=True,
+    ).create_engine_config()
+    device = torch.device("cuda")
+    state = Qwen4ExpModelState(vllm_config, torch.nn.Module(), None, device)
+    requests = RequestState(8, 8, 32, 0, 128, device, use_dense_all_token_ids=True)
+    return state, requests, InputBuffers(8, 32, device)
+
+
+def _ple_batch(buffers, num_reqs, padded, offsets, mapping):
+    batch = InputBatch.make_dummy(num_reqs, offsets[-1], buffers)
+    batch.num_reqs_after_padding = padded
+    batch.idx_mapping = torch.tensor(mapping, dtype=torch.int64, device=buffers.device)
+    batch.query_start_loc = torch.tensor(
+        offsets, dtype=torch.int32, device=buffers.device
+    )
+    return batch
+
+
+def test_sm90_prefill_graph_coverage_preserves_explicit_limits(tmp_path):
+    config = Qwen4ExpConfig(
+        architectures=["Qwen4ExpForConditionalGeneration"],
+        text_config=_text_config(ple_layer_ids=[]),
+    )
+    config.save_pretrained(tmp_path)
+    args = dict(
+        model=str(tmp_path),
+        max_model_len=2048,
+        max_num_seqs=128,
+        max_num_batched_tokens=1024,
+        language_model_only=True,
+    )
+    resolved = EngineArgs(**args).create_engine_config().compilation_config
+    if current_platform.is_cuda() and current_platform.is_device_capability_family(90):
+        assert resolved.max_prefill_cudagraph_capture_tokens == 1024
+        assert resolved.max_decode_cudagraph_capture_tokens == 512
+        assert resolved.prefill_cudagraph_capture_token_sizes is not None
+        assert resolved.decode_cudagraph_capture_request_sizes is not None
+        assert 1024 in resolved.prefill_cudagraph_capture_token_sizes
+        assert 40 in resolved.decode_cudagraph_capture_request_sizes
+    explicit = (
+        EngineArgs(
+            **args,
+            compilation_config={
+                "max_prefill_cudagraph_capture_tokens": 512,
+                "decode_cudagraph_capture_request_sizes": [1, 8, 32, 40, 64, 128],
+            },
+        )
+        .create_engine_config()
+        .compilation_config
+    )
+    assert explicit.max_prefill_cudagraph_capture_tokens == 512
+    assert max(explicit.prefill_cudagraph_capture_token_sizes) == 512
+    assert explicit.decode_cudagraph_capture_request_sizes == [1, 8, 32, 40, 64, 128]
+
+
 @pytest.mark.parametrize("workers, expected", [(None, 4), (1, 1), (8, 8)])
 def test_renderer_workers_resolve_for_target_generation(tmp_path, workers, expected):
     """Qwen generation parallelizes rendering while respecting an explicit size."""
@@ -77,26 +145,23 @@ def test_renderer_workers_resolve_for_target_generation(tmp_path, workers, expec
     assert model_config.renderer_num_workers == expected
 
 
-def test_moe_sp_rejects_pipeline_parallel() -> None:
+def test_moe_sp_rejects_pipeline_parallel(tmp_path) -> None:
     """Automatic MoE SP must validate HC topology even without --enable-hc-sp."""
-    config = SimpleNamespace(
-        model_config=SimpleNamespace(
-            hf_text_config=_text_config(num_experts=4, ple_layer_ids=[]),
-        ),
-        cache_config=CacheConfig(),
-        parallel_config=ParallelConfig(
+    Qwen4ExpConfig(
+        architectures=["Qwen4ExpForConditionalGeneration"],
+        text_config=_text_config(num_experts=4, ple_layer_ids=[]),
+    ).save_pretrained(tmp_path)
+    with pytest.raises(ValueError, match="MoE SP requires PP=1"):
+        EngineArgs(
+            model=str(tmp_path),
             tensor_parallel_size=2,
             pipeline_parallel_size=2,
             data_parallel_size=2,
             enable_expert_parallel=True,
+            nnodes=4,
             all2all_backend="allgather_reducescatter",
-        ),
-    )
-    with (
-        patch("vllm.platforms.current_platform.is_cuda_alike", return_value=True),
-        pytest.raises(ValueError, match="MoE SP requires PP=1"),
-    ):
-        Qwen4ExpForConditionalGenerationConfig.verify_and_update_config(config)
+            language_model_only=True,
+        ).create_engine_config()
 
 
 @spawn_new_process_for_each_test
@@ -280,83 +345,57 @@ def test_qwen4_exp_mtp_override_sets_draft_config(
     assert draft_config.n_predict == 1
 
 
-def test_qwen4_exp_model_state_prepares_ngram_context() -> None:
-    model_state = object.__new__(Qwen4ExpModelState)
-    model_state.uses_ngram_embedding = True
-    model_state.ngram_context_len = 3
-    model_state.ngram_eos_token_id = 99
-    model_state.ngram_context = torch.empty((8, 3), dtype=torch.int32)
-    model_state.ngram_context_offsets = torch.arange(-3, 0, dtype=torch.int64)
-    model_state.ple_query_start_loc = torch.empty(9, dtype=torch.int32)
-    model_state.disk_offload_modules = []
-
-    input_batch = SimpleNamespace(
-        num_reqs=2,
-        num_reqs_after_padding=3,
-        idx_mapping=torch.tensor([1, 0]),
-        query_start_loc=torch.tensor([0, 2, 3, 3], dtype=torch.int32),
-    )
-    req_states = SimpleNamespace(
-        num_computed_tokens=SimpleNamespace(gpu=torch.tensor([3, 1])),
-        all_token_ids=SimpleNamespace(
-            gpu=torch.tensor([[1, 2, 3, 4], [20, 21, 22, 23]], dtype=torch.int32)
-        ),
-    )
-
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_inputs = model_state.prepare_inputs(input_batch, req_states)
+def test_qwen4_exp_model_state_prepares_ngram_context(tmp_path) -> None:
+    model_state, req_states, buffers = _ple_state(tmp_path, 3)
+    for req, tokens, computed in ((0, [1, 2, 3, 4], 3), (1, [20, 21, 22, 23], 1)):
+        req_states.all_token_ids.stage_write(req, 0, tokens)
+        req_states.num_computed_tokens.stage_write_elem(req, computed)
+    req_states.apply_staged_writes()
+    input_batch = _ple_batch(buffers, 2, 3, [0, 2, 3, 3], [1, 0])
+    model_inputs = model_state.prepare_inputs(input_batch, req_states)
 
     expected_query_start_loc = torch.full((9,), 3, dtype=torch.int32)
     expected_query_start_loc[0] = 0
     expected_query_start_loc[1] = 2
     torch.testing.assert_close(
-        model_inputs["query_start_loc"], expected_query_start_loc
+        model_inputs["query_start_loc"].cpu(), expected_query_start_loc
     )
     expected_context = torch.full((8, 3), 99, dtype=torch.int32)
     expected_context[:2] = torch.tensor([[99, 99, 20], [1, 2, 3]])
-    torch.testing.assert_close(model_inputs["ngram_context"], expected_context)
+    torch.testing.assert_close(model_inputs["ngram_context"].cpu(), expected_context)
 
     # Retain the views to detect reallocations as the request layout changes.
     query_start_loc = model_inputs["query_start_loc"]
     ngram_context = model_inputs["ngram_context"]
-    input_batch.num_reqs = 1
-    input_batch.num_reqs_after_padding = 1
-    input_batch.idx_mapping = torch.tensor([0])
-    input_batch.query_start_loc = torch.tensor([0, 3], dtype=torch.int32)
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_inputs = model_state.prepare_inputs(input_batch, req_states)
+    input_batch = _ple_batch(buffers, 1, 1, [0, 3], [0])
+    model_inputs = model_state.prepare_inputs(input_batch, req_states)
 
     expected_query_start_loc.fill_(3)
     expected_query_start_loc[0] = 0
     torch.testing.assert_close(
-        model_inputs["query_start_loc"], expected_query_start_loc
+        model_inputs["query_start_loc"].cpu(), expected_query_start_loc
     )
     expected_context.fill_(99)
     expected_context[0] = torch.tensor([1, 2, 3])
-    torch.testing.assert_close(model_inputs["ngram_context"], expected_context)
+    torch.testing.assert_close(model_inputs["ngram_context"].cpu(), expected_context)
     assert model_inputs["query_start_loc"].data_ptr() == query_start_loc.data_ptr()
     assert model_inputs["ngram_context"].data_ptr() == ngram_context.data_ptr()
 
 
-def test_qwen4_exp_model_state_prepares_stable_dummy_ngram_inputs() -> None:
-    model_state = object.__new__(Qwen4ExpModelState)
-    model_state.uses_ngram_embedding = True
-    model_state.ngram_eos_token_id = 99
-    model_state.ngram_context = torch.empty((8, 3), dtype=torch.int32)
-    model_state.ple_query_start_loc = torch.empty(9, dtype=torch.int32)
-
-    with patch.object(MambaHybridModelState, "prepare_dummy_inputs", return_value={}):
-        first = model_state.prepare_dummy_inputs(num_reqs=3, num_tokens=4)
-        # Dummy runs establish the addresses used during CUDA graph capture.
-        query_start_loc_ptr = first["query_start_loc"].data_ptr()
-        ngram_context_ptr = first["ngram_context"].data_ptr()
-        second = model_state.prepare_dummy_inputs(num_reqs=3, num_tokens=4)
+def test_qwen4_exp_model_state_prepares_stable_dummy_ngram_inputs(tmp_path) -> None:
+    model_state, _, _ = _ple_state(tmp_path, 3)
+    first = model_state.prepare_dummy_inputs(num_reqs=3, num_tokens=4)
+    query_start_loc_ptr = first["query_start_loc"].data_ptr()
+    ngram_context_ptr = first["ngram_context"].data_ptr()
+    second = model_state.prepare_dummy_inputs(num_reqs=3, num_tokens=4)
 
     expected_query_start_loc = torch.full((9,), 4, dtype=torch.int32)
     expected_query_start_loc[:4] = torch.tensor([0, 1, 2, 4], dtype=torch.int32)
-    torch.testing.assert_close(second["query_start_loc"], expected_query_start_loc)
     torch.testing.assert_close(
-        second["ngram_context"], torch.full((8, 3), 99, dtype=torch.int32)
+        second["query_start_loc"].cpu(), expected_query_start_loc
+    )
+    torch.testing.assert_close(
+        second["ngram_context"].cpu(), torch.full((8, 3), 99, dtype=torch.int32)
     )
     assert second["query_start_loc"].data_ptr() == query_start_loc_ptr
     assert second["ngram_context"].data_ptr() == ngram_context_ptr
@@ -383,53 +422,28 @@ def test_qkv_proj_mapping_allows_bf16_indexer(model_cls) -> None:
     [Qwen4ExpModelState],
     ids=["nvidia"],
 )
-def test_qwen4_exp_model_state_pads_replayed_request_range(state_cls) -> None:
+def test_qwen4_exp_model_state_pads_replayed_request_range(state_cls, tmp_path) -> None:
     """The PLE buffers must be valid for the capture-time request range.
 
     A PIECEWISE graph replays with the request count of the piece it was captured
     for, so its request lookup scans every row of `ple_query_start_loc` up to that
     count and reads the matching `ngram_context` rows.
     """
-    model_state = object.__new__(state_cls)
-    model_state.uses_ngram_embedding = True
-    model_state.ngram_context_len = 2
-    model_state.ngram_eos_token_id = 99
-    model_state.max_num_reqs = 8
-    model_state.ngram_context = torch.empty((8, 2), dtype=torch.int32)
-    model_state.ngram_context_offsets = torch.arange(-2, 0, dtype=torch.int64)
-    model_state.ple_query_start_loc = torch.zeros(9, dtype=torch.int32)
-    # Empty: the disk-offload staging path is covered by test_ple.py.
-    model_state.disk_offload_modules = []
-    req_states = SimpleNamespace(
-        # Rows 0 and 1 have prior context, so the context rows are not all sentinel.
-        num_computed_tokens=SimpleNamespace(
-            gpu=torch.tensor([1, 1, 0, 0, 0, 0, 0, 0], dtype=torch.int32)
-        ),
-        all_token_ids=SimpleNamespace(gpu=torch.arange(64).view(8, 8).to(torch.int32)),
-    )
+    model_state, req_states, buffers = _ple_state(tmp_path, 2)
+    assert isinstance(model_state, state_cls)
+    for req in range(8):
+        req_states.all_token_ids.stage_write(req, 0, list(range(req * 8, req * 8 + 8)))
+        req_states.num_computed_tokens.stage_write_elem(req, 1 if req < 2 else 0)
+    req_states.apply_staged_writes()
 
     # A wider earlier batch leaves a non-monotonic tail behind.
-    wide_batch = SimpleNamespace(
-        num_reqs=3,
-        num_reqs_after_padding=3,
-        num_tokens=3,
-        idx_mapping=torch.arange(3),
-        query_start_loc=torch.tensor([0, 1, 2, 3], dtype=torch.int32),
-    )
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_state.prepare_inputs(wide_batch, req_states)
+    wide_batch = _ple_batch(buffers, 3, 3, [0, 1, 2, 3], [0, 1, 2])
+    model_state.prepare_inputs(wide_batch, req_states)
 
     # One request, 8 tokens: the 8-token piece was captured with R_cap = 8, but
     # PIECEWISE does not pad requests, so num_reqs_after_padding == num_reqs == 1.
-    batch = SimpleNamespace(
-        num_reqs=1,
-        num_reqs_after_padding=1,
-        num_tokens=8,
-        idx_mapping=torch.tensor([0]),
-        query_start_loc=torch.tensor([0, 8], dtype=torch.int32),
-    )
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_state.prepare_inputs(batch, req_states)
+    batch = _ple_batch(buffers, 1, 1, [0, 8], [0])
+    model_state.prepare_inputs(batch, req_states)
 
     decoded = model_state.ple_query_start_loc
     assert decoded[0] == 0
@@ -444,43 +458,29 @@ def test_qwen4_exp_model_state_pads_replayed_request_range(state_cls) -> None:
     # (they are still read for padding tokens).
     expected_context = torch.full((8, 2), 99, dtype=torch.int32)
     expected_context[0] = torch.tensor([99, 0], dtype=torch.int32)
-    torch.testing.assert_close(model_state.ngram_context, expected_context)
+    torch.testing.assert_close(model_state.ngram_context.cpu(), expected_context)
 
     # A request-padded batch (FULL graphs): the runner already pads its own copy,
     # so the buffer tail past it must be padded with the same value.
-    padded_batch = SimpleNamespace(
-        num_reqs=2,
-        num_reqs_after_padding=4,
-        num_tokens=6,
-        idx_mapping=torch.tensor([0, 1]),
-        query_start_loc=torch.tensor([0, 2, 4, 6, 6], dtype=torch.int32),
-    )
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_state.prepare_inputs(padded_batch, req_states)
+    padded_batch = _ple_batch(buffers, 2, 4, [0, 2, 4, 6, 6], [0, 1])
+    model_state.prepare_inputs(padded_batch, req_states)
     torch.testing.assert_close(
-        model_state.ple_query_start_loc,
+        model_state.ple_query_start_loc.cpu(),
         torch.tensor([0, 2, 4, 6, 6, 6, 6, 6, 6], dtype=torch.int32),
     )
     assert torch.all(model_state.ngram_context[2:] == 99), model_state.ngram_context
 
     # A full batch leaves no tail to pad.
-    full_batch = SimpleNamespace(
-        num_reqs=8,
-        num_reqs_after_padding=8,
-        num_tokens=8,
-        idx_mapping=torch.arange(8),
-        query_start_loc=torch.arange(9, dtype=torch.int32),
-    )
-    with patch.object(MambaHybridModelState, "prepare_inputs", return_value={}):
-        model_state.prepare_inputs(full_batch, req_states)
+    full_batch = _ple_batch(buffers, 8, 8, list(range(9)), list(range(8)))
+    model_state.prepare_inputs(full_batch, req_states)
     torch.testing.assert_close(
-        model_state.ple_query_start_loc, torch.arange(9, dtype=torch.int32)
+        model_state.ple_query_start_loc.cpu(), torch.arange(9, dtype=torch.int32)
     )
 
     # Capture-time dummy inputs follow the same convention.
-    with patch.object(MambaHybridModelState, "prepare_dummy_inputs", return_value={}):
-        model_state.prepare_dummy_inputs(num_reqs=2, num_tokens=5)
+    model_state.prepare_dummy_inputs(num_reqs=2, num_tokens=5)
     torch.testing.assert_close(
-        model_state.ple_query_start_loc[:3], torch.tensor([0, 2, 5], dtype=torch.int32)
+        model_state.ple_query_start_loc[:3].cpu(),
+        torch.tensor([0, 2, 5], dtype=torch.int32),
     )
     assert torch.all(model_state.ple_query_start_loc[3:] >= 5)

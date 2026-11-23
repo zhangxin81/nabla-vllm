@@ -98,6 +98,10 @@ requires_deep_ep_v2 = pytest.mark.skipif(
 def test_xpu_qwen3_5_shared_expert_decode(tmp_path):
     """FP8 shared-expert B1 decode uses the native kernel and matches stock MoE."""
     from transformers import Qwen3_5MoeConfig, Qwen3_5MoeTextConfig
+    from vllm.models.qwen3_5.xpu.model import Qwen3_5SparseMoeBlock
+    from vllm.models.qwen3_5.xpu.specialized_decode.hooks import (
+        initialize_specialized_decode,
+    )
 
     from vllm.config import ModelConfig
     from vllm.distributed import (
@@ -109,10 +113,6 @@ def test_xpu_qwen3_5_shared_expert_decode(tmp_path):
     from vllm.model_executor.layers.fused_moe.experts.xpu_moe import XPUExpertsFp8
     from vllm.model_executor.layers.quantization.fp8 import Fp8Config
     from vllm.model_executor.models.qwen3_next import Qwen3NextSparseMoeBlock
-    from vllm.models.qwen3_5.xpu.model import Qwen3_5SparseMoeBlock
-    from vllm.models.qwen3_5.xpu.specialized_decode.hooks import (
-        initialize_specialized_decode,
-    )
     from vllm.utils.torch_utils import set_default_torch_dtype
     from vllm.v1.worker.workspace import init_workspace_manager, reset_workspace_manager
 
@@ -2172,6 +2172,45 @@ def test_humming_gated_non_gated_shape_contract(activation: MoEActivation):
     experts.num_dispatchers = 2
     batched_metas, _ = experts.get_buffer_metas(17, top_k, activation)
     assert batched_metas["quanted_gate_up_input"]["shape"][0] == num_experts * 17 * 2
+
+
+def test_humming_buffer_plans_track_configuration():
+    from dataclasses import replace
+
+    experts, _ = _make_humming_indexed_experts(MoEActivation.SILU)
+    topk = experts.moe_config.experts_per_token
+    first = experts.get_buffer_metas(17, topk, MoEActivation.SILU)
+    assert experts.get_buffer_metas(17, topk, MoEActivation.SILU) is first
+    with pytest.raises(TypeError):
+        first[0]["gate_up_output"]["shape"] = ()
+    config = experts.humming_configs["w13"]
+    experts.humming_configs["w13"] = replace(
+        config, pad_shape_k=config.pad_shape_k + 128
+    )
+    updated = experts.get_buffer_metas(17, topk, MoEActivation.SILU)
+    assert updated[0]["quanted_gate_up_input"]["shape"][-1] == (
+        first[0]["quanted_gate_up_input"]["shape"][-1] - 128
+    )
+    assert updated is not first
+    experts.humming_configs["w13"] = config
+    experts.init_humming_moe()
+    assert experts.get_buffer_metas(17, topk, MoEActivation.SILU) is not first
+    from vllm.model_executor.layers.fused_moe.experts.fused_humming_moe import (
+        BatchedHummingGroupedExperts,
+    )
+
+    batched = BatchedHummingGroupedExperts(
+        experts.moe_config,
+        experts.quant_config,
+        max_num_tokens=17,
+        num_dispatchers=2,
+    )
+    before = batched.get_buffer_metas(17, topk, MoEActivation.SILU)
+    batched.max_num_tokens = 34
+    after = batched.get_buffer_metas(17, topk, MoEActivation.SILU)
+    assert after[0]["quanted_gate_up_input"]["shape"][0] == (
+        2 * before[0]["quanted_gate_up_input"]["shape"][0]
+    )
 
 
 def test_humming_indexed_writes_supplied_output_buffer():

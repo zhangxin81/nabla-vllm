@@ -3318,6 +3318,50 @@ def test_local_ipc_descriptor_cannot_cross_exported_allocation():
 
 
 @pytest.mark.cpu_test
+def test_local_ipc_address_plan_preserves_bounds_and_registration_precedence():
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.local_fastpath import (
+        IpcAddressPlan,
+    )
+
+    allocations = (
+        IpcAllocation(b"a" * 64, 100, 1000, 0, 100),
+        IpcAllocation(b"b" * 64, 100, 1100, 0, 100),
+    )
+    for registered in (allocations, tuple(reversed(allocations))):
+        plan = IpcAddressPlan(registered, (3000, 5000))
+        addresses = np.array([1000, 1090, 1100, 1199], dtype=np.int64)
+        lengths = np.array([100, 10, 100, 1], dtype=np.int64)
+        assert np.array_equal(
+            plan.translate(addresses, lengths),
+            translate_remote_addresses(addresses, registered, (3000, 5000), lengths),
+        )
+        for address, length in ((999, 1), (1090, 11), (1199, 2), (1000, 0)):
+            with pytest.raises(ValueError):
+                plan.translate(np.array([address]), np.array([length]))
+    overlap = (allocations[0], IpcAllocation(b"c" * 64, 100, 1050, 0, 100))
+    for registered in (overlap, tuple(reversed(overlap))):
+        assert (
+            IpcAddressPlan(registered, (3000, 5000))
+            .translate(np.array([1050]))
+            .tolist()
+            == translate_remote_addresses(
+                np.array([1050]), registered, (3000, 5000)
+            ).tolist()
+        )
+    assert IpcAddressPlan((), ()).translate(np.array([], dtype=np.int64)).size == 0
+    with pytest.raises(ValueError, match="outside CUDA IPC allocations"):
+        IpcAddressPlan((), ()).translate(np.array([1000]))
+    with pytest.raises(ValueError, match="64-bit"):
+        IpcAddressPlan(allocations, (2**63 - 1, 5000))
+    large = IpcAllocation(b"d" * 64, 100, 2**54, 0, 100)
+    translated = IpcAddressPlan((large,), (2**55,)).translate(
+        np.array([2**54 + 1], dtype=np.uint64), np.array([1], dtype=np.uint64)
+    )
+    assert translated.dtype == np.int64
+    assert translated.tolist() == [2**55 + 1]
+
+
+@pytest.mark.cpu_test
 def test_local_fastpath_merges_aliased_fa_and_ssm_ranges():
     """Shared physical pages are copied once despite overlapping logical views."""
     spans = coalesce_copy_spans(

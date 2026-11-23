@@ -649,6 +649,22 @@ class CudaPlatformBase(Platform):
                 max_decode_requests=vllm_config.scheduler_config.max_num_seqs,
                 max_decode_tokens=8192,
             )
+        if (
+            self.is_device_capability_family(90)
+            and vllm_config.model_config is not None
+            and vllm_config.model_config.hf_config.model_type
+            in (
+                "qwen4_exp",
+                "qwen4_exp_text",
+                "deepseek_v41",
+                "deepseek_v41_text",
+            )
+        ):
+            return CUDAGraphCaptureDefaults(
+                max_prefill_tokens=1024,
+                max_decode_requests=min(vllm_config.scheduler_config.max_num_seqs, 512),
+                max_decode_tokens=512,
+            )
         return super().get_cudagraph_capture_defaults(vllm_config)
 
     @classmethod

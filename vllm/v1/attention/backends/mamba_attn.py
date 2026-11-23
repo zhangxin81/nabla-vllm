@@ -423,7 +423,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
         assert is_prefilling is not None
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
         assert seq_lens_cpu is not None
-        query_lens_cpu = torch.diff(common_attn_metadata.query_start_loc_cpu)
+        query_lens_cpu = common_attn_metadata.query_lens_cpu()
 
         # First prompt chunks have no prior Mamba state and must stay prefills.
         has_prior_state = seq_lens_cpu > query_lens_cpu

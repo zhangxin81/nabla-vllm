@@ -630,11 +630,12 @@ class KVCacheManager:
         # "non-committable" tokens (e.g., draft tokens that could be rejected).
         # Therefore, we cap the number at `request.num_tokens`, ensuring only
         # "finalized" tokens are cached.
-        num_tokens_to_cache = min(
-            total_computed_tokens + num_new_tokens,
-            request.num_tokens,
-        )
-        self.coordinator.cache_blocks(request, num_tokens_to_cache)
+        if self.enable_caching:
+            num_tokens_to_cache = min(
+                total_computed_tokens + num_new_tokens,
+                request.num_tokens,
+            )
+            self.coordinator.cache_blocks(request, num_tokens_to_cache)
 
         return self.create_kv_cache_blocks(new_blocks)
 

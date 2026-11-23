@@ -490,12 +490,21 @@ class CommonAttentionMetadata:
 
     _num_computed_tokens_cache: torch.Tensor | None = None
     _token_to_req_indices_cache: torch.Tensor | None = None
+    _query_lens_cpu_cache: torch.Tensor | None = None
 
     def batch_size(self) -> int:
         return self.seq_lens.shape[0]
 
     def replace(self, **kwargs) -> "CommonAttentionMetadata":
+        if "query_start_loc_cpu" in kwargs:
+            kwargs.setdefault("_query_lens_cpu_cache", None)
         return replace(self, **kwargs)
+
+    def query_lens_cpu(self) -> torch.Tensor:
+        """Reuse read-only CPU query lengths within this metadata build."""
+        if self._query_lens_cpu_cache is None:
+            self._query_lens_cpu_cache = torch.diff(self.query_start_loc_cpu)
+        return self._query_lens_cpu_cache
 
     def compute_num_computed_tokens(self) -> torch.Tensor:
         """Compute num_computed_tokens on device (seq_lens - query_lens)."""
