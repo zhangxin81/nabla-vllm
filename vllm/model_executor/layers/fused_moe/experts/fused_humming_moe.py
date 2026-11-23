@@ -5,6 +5,7 @@
 import json
 import math
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import torch
@@ -170,6 +171,7 @@ class HummingExpertsBase(mk.FusedMoEExpertsModular):
     def init_humming_moe(self):
         from vllm.utils.humming import get_heuristics_config
 
+        self._buffer_metas_cache: dict[tuple, tuple] = {}
         self.compute_config = {
             "use_batch_invariant": envs.VLLM_BATCH_INVARIANT,
             "use_f16_accum": envs.VLLM_HUMMING_USE_F16_ACCUM,
@@ -525,6 +527,24 @@ class HummingExpertsBase(mk.FusedMoEExpertsModular):
         a_dtype = self.humming_configs["w13"].a_dtype
         c_dtype = self.humming_configs["w13"].c_dtype
         down_a_dtype = w2_config.a_dtype
+        cache_key = (
+            M,
+            topk,
+            activation,
+            num_experts,
+            gate_up_dim,
+            intermediate_dim,
+            K,
+            self.is_batched(),
+            self.max_num_tokens,
+            self.num_dispatchers,
+            self.humming_gemm_type(),
+            a_dtype,
+            c_dtype,
+            down_a_dtype,
+        )
+        if cache_key in self._buffer_metas_cache:
+            return self._buffer_metas_cache[cache_key]
         torch_dtype_map = {
             dtypes.float16: torch.float16,
             dtypes.bfloat16: torch.bfloat16,
@@ -584,7 +604,14 @@ class HummingExpertsBase(mk.FusedMoEExpertsModular):
         if not self.is_batched():
             required_buffers.append("output")
 
-        return buffer_metas, required_buffers
+        plan = (
+            MappingProxyType({k: MappingProxyType(v) for k, v in buffer_metas.items()}),
+            tuple(required_buffers),
+        )
+        if len(self._buffer_metas_cache) >= 64:
+            self._buffer_metas_cache.clear()
+        self._buffer_metas_cache[cache_key] = plan
+        return plan
 
     def _workspace_shapes(self, M: int, topk: int, activation: MoEActivation):
         buffer_metas, required_buffers = self.get_buffer_metas(M, topk, activation)

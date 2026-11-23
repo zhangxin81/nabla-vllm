@@ -42,6 +42,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.local_fastpath import (
     CudaIpcDriver,
+    IpcAddressPlan,
     LocalIpcMetadata,
     get_boot_id,
     normalize_gpu_uuid,
@@ -995,9 +996,7 @@ class NixlBaseConnectorWorker:
         self.local_ipc_driver: CudaIpcDriver | None = None
         self.local_ipc_metadata: LocalIpcMetadata | None = None
         self.local_ipc_dlists: dict[int, np.ndarray] = {}
-        self.local_ipc_peers: dict[
-            tuple[EngineId, int], tuple[LocalIpcMetadata, tuple[int, ...]]
-        ] = {}
+        self.local_ipc_peers: dict[tuple[EngineId, int], IpcAddressPlan] = {}
 
         # reserve different cores for start_load_kv() from model_forward()
         if self.device_type == "cpu":
@@ -2957,9 +2956,8 @@ class NixlBaseConnectorWorker:
                 self.local_ipc_driver.open(allocation)
                 for allocation in local_ipc.allocations
             )
-            self.local_ipc_peers[engine_id, remote_tp_rank] = (
-                local_ipc,
-                mapped_bases,
+            self.local_ipc_peers[engine_id, remote_tp_rank] = IpcAddressPlan(
+                local_ipc.allocations, mapped_bases
             )
             self.local_ipc_dlists[remote_handle] = blocks_data
 

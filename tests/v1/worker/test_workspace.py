@@ -12,6 +12,38 @@ from vllm.config import VllmConfig
 from vllm.v1.worker.gpu_worker import _num_workspace_lanes
 
 
+def test_locked_workspace_views_preserve_lanes_retention_and_unlock():
+    manager = workspace.WorkspaceManager(torch.device("cpu"), num_lanes=2)
+    for lane in (0, 1):
+        with workspace.use_workspace_lane(lane):
+            manager.get_simultaneous(((1024,), torch.uint8))
+    manager.lock()
+    pointers = []
+    for lane in (0, 1):
+        with workspace.use_workspace_lane(lane):
+            (whole,) = manager.get_simultaneous(((1024,), torch.uint8))
+            whole.unsqueeze_(0)
+            same = manager.get_simultaneous(((1024,), torch.uint8))[0]
+            assert same.shape == (1024,)
+            assert same is not whole and same.data_ptr() == whole.data_ptr()
+            pointers.append(whole.data_ptr())
+            _, intact = manager.get_retained("tail", (256,), torch.uint8)
+            assert not intact
+            manager.get_simultaneous(((512,), torch.uint8))
+            _, intact = manager.get_retained("tail", (256,), torch.uint8)
+            assert intact
+            manager.get_simultaneous(((1024,), torch.uint8))
+            _, intact = manager.get_retained("tail", (256,), torch.uint8)
+            assert not intact
+    assert pointers[0] != pointers[1]
+    old = manager.get_simultaneous(((512,), torch.uint8))[0]
+    manager.unlock()
+    manager.get_simultaneous(((2048,), torch.uint8))
+    manager.lock()
+    new = manager.get_simultaneous(((512,), torch.uint8))[0]
+    assert new is not old and new.data_ptr() != old.data_ptr()
+
+
 class _SpecConfig:
     def __init__(self, dspark: bool) -> None:
         self._dspark = dspark

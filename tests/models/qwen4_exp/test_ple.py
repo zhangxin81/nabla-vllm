@@ -76,6 +76,44 @@ from vllm.v1.kv_cache_interface import AttentionSpec, MambaSpec, MLAAttentionSpe
 from vllm.v1.kv_cache_layout import KVCacheLayout
 
 
+@pytest.mark.parametrize("placement", ["gpu", "uva"])
+@pytest.mark.parametrize("depth", [1, 2, 3])
+def test_ple_input_staging_preserves_history_and_padding(placement, depth):
+    from vllm.models.qwen4_exp.nvidia.ops.ple_inputs import prepare_ple_inputs
+    from vllm.v1.worker.gpu.buffer_utils import UvaBuffer
+
+    capacity, history_length, eos = 65, 19, 248044
+    owner = UvaBuffer((capacity, history_length), torch.int32)
+    owner.cpu.copy_(torch.arange(capacity * history_length).reshape(owner.cpu.shape))
+    history = owner.uva() if placement == "uva" else owner.cpu.cuda()
+    computed = torch.arange(capacity, dtype=torch.int32, device="cuda") % 20
+    mapping = torch.arange(capacity - 1, -1, -1, dtype=torch.int32, device="cuda")
+    context_storage = torch.empty(
+        capacity * depth + 1, dtype=torch.int32, device="cuda"
+    )
+    context = context_storage[1:].view(capacity, depth)
+    target_qsl = torch.empty(capacity + 2, dtype=torch.int32, device="cuda")[1:]
+    for n in (0, 1, 17, capacity):
+        padded = min(capacity, (n + 7) // 8 * 8)
+        lengths = torch.zeros(padded, dtype=torch.int32, device="cuda")
+        lengths[:n] = torch.arange(n, device="cuda") % 3 + 1
+        qsl = torch.cat((lengths.new_zeros(1), lengths.cumsum(0).int()))
+        expected_context = torch.full_like(context, eos)
+        if n:
+            req = mapping[:n].long()
+            pos = computed[req].long()[:, None] + torch.arange(-depth, 0, device="cuda")
+            tokens = history[req[:, None], pos.clamp_min(0)]
+            expected_context[:n].copy_(torch.where(pos >= 0, tokens, eos))
+        expected_qsl = torch.empty_like(target_qsl)
+        expected_qsl[: padded + 1].copy_(qsl)
+        expected_qsl[padded + 1 :].copy_(qsl[-1])
+        prepare_ple_inputs(
+            mapping, computed, history, qsl, context, target_qsl, n, padded, eos
+        )
+        assert torch.equal(context, expected_context)
+        assert torch.equal(target_qsl, expected_qsl)
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("full_graph", [False, True])
 @pytest.mark.parametrize(

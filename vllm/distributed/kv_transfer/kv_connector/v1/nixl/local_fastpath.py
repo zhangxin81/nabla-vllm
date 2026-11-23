@@ -201,6 +201,71 @@ def translate_remote_addresses(
     return translated
 
 
+class IpcAddressPlan:
+    """Index an immutable peer registration without changing overlap precedence."""
+
+    def __init__(
+        self,
+        allocations: tuple[IpcAllocation, ...],
+        mapped_bases: tuple[int, ...],
+    ) -> None:
+        if len(allocations) != len(mapped_bases):
+            raise ValueError("CUDA IPC allocation mapping is incomplete")
+        for allocation, mapped_base in zip(allocations, mapped_bases, strict=True):
+            allocation.validate()
+            if not (
+                0 <= allocation.exported_base <= 2**63 - 1 - allocation.length
+                and type(mapped_base) is int
+                and 0 <= mapped_base <= 2**63 - 1 - allocation.length
+            ):
+                raise ValueError("CUDA IPC addresses exceed signed 64-bit bounds")
+        self.allocations = allocations
+        self.mapped_bases = mapped_bases
+        order = sorted(
+            range(len(allocations)), key=lambda i: allocations[i].exported_base
+        )
+        self.starts = np.array([allocations[i].exported_base for i in order], np.int64)
+        self.sizes = np.array([allocations[i].length for i in order], np.int64)
+        self.bases = np.array([mapped_bases[i] for i in order], np.int64)
+        self.disjoint = bool(
+            np.all(self.starts[1:] >= self.starts[:-1] + self.sizes[:-1])
+        )
+        for array in (self.starts, self.sizes, self.bases):
+            array.flags.writeable = False
+
+    def translate(
+        self, addresses: np.ndarray, lengths: np.ndarray | None = None
+    ) -> np.ndarray:
+        addresses = np.asarray(addresses)
+        if addresses.ndim != 1 or addresses.dtype.kind not in "iu":
+            raise ValueError("Invalid CUDA IPC descriptor addresses")
+        addresses = addresses.astype(np.int64, copy=False)
+        if lengths is not None:
+            lengths = np.asarray(lengths)
+            if lengths.ndim != 1 or lengths.dtype.kind not in "iu":
+                raise ValueError("Invalid CUDA IPC descriptor lengths")
+            lengths = lengths.astype(np.int64, copy=False)
+        if not self.disjoint:
+            return translate_remote_addresses(
+                addresses, self.allocations, self.mapped_bases, lengths
+            )
+        if lengths is None:
+            lengths = np.ones(len(addresses), dtype=np.int64)
+        if len(lengths) != len(addresses) or np.any(lengths <= 0):
+            raise ValueError("Invalid CUDA IPC descriptor lengths")
+        if len(addresses) == 0:
+            return np.empty(0, dtype=np.int64)
+        rows = np.searchsorted(self.starts, addresses, side="right") - 1
+        if np.any(rows < 0):
+            raise ValueError("Remote descriptor is outside CUDA IPC allocations")
+        offsets = addresses - self.starts[rows]
+        if np.any(offsets > self.sizes[rows]) or np.any(
+            lengths > self.sizes[rows] - offsets
+        ):
+            raise ValueError("Remote descriptor is outside CUDA IPC allocations")
+        return self.bases[rows] + offsets
+
+
 def coalesce_copy_spans(
     src_addresses: np.ndarray,
     dst_addresses: np.ndarray,

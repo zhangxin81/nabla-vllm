@@ -19,7 +19,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import (
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.local_fastpath import (
     coalesce_copy_spans,
     expand_strided_descriptors,
-    translate_remote_addresses,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.metadata import (
     HB_NOTIF_PREFIX,
@@ -613,10 +612,7 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
         remote_addresses, remote_lengths = expand_strided_descriptors(
             remote_dlist, remote_block_descs_ids
         )
-        remote_metadata, mapped_bases = peer
-        remote_addresses = translate_remote_addresses(
-            remote_addresses, remote_metadata.allocations, mapped_bases, remote_lengths
-        )
+        remote_addresses = peer.translate(remote_addresses, remote_lengths)
         spans = coalesce_copy_spans(
             remote_addresses,
             local_addresses,

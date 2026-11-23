@@ -277,7 +277,7 @@ class PleShortConvAttentionMetadataBuilder(ShortConvAttentionMetadataBuilder):
 
         max_prefill_query_len = 0
         if metadata.num_prefills > 0:
-            query_lens_cpu = torch.diff(common_attn_metadata.query_start_loc_cpu)
+            query_lens_cpu = common_attn_metadata.query_lens_cpu()
             max_prefill_query_len = int(
                 query_lens_cpu[
                     metadata.num_decodes : (
@@ -332,7 +332,7 @@ class PleShortConvAttentionMetadataBuilder(ShortConvAttentionMetadataBuilder):
         del common_prefix_len, fast_build, kwargs
         query_start_loc = m.query_start_loc
         query_start_loc_cpu = m.query_start_loc_cpu
-        query_lens_cpu = torch.diff(query_start_loc_cpu)
+        query_lens_cpu = m.query_lens_cpu()
         block_table_tensor = mamba_get_block_table_tensor(
             m.block_table_tensor,
             m.seq_lens,

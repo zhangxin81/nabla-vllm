@@ -7,6 +7,11 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 我们保留目标模型所需的调度、并行、通信和内核能力，逐步删除无关后端和模型依赖。
 每次裁剪或重构都要能说明它改变了什么，并用同配置的服务基线验证正确性、吞吐和延迟。
 
+目标模型的 PLE 输入准备、工作区 view、Humming buffer 计划和 IPC 注册地址查找
+已减少重复构造；H20／H100 默认覆盖到 1024-token prefill Graph，显式配置优先。
+默认值、缓存失效条件和 Graph padding 的数值边界见
+[SM90 推理配置](docs/configuration/optimization.md#nabla-sm90-graph-coverage-and-host-planning)。
+
 ## 统一算子分桶
 
 **统一算子分桶是 nabla-vllm 的核心特性之一。** 保留算子的范围判定、配置选择、

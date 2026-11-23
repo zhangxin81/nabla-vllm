@@ -353,7 +353,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             # has_prefill. Classify first chunks as prefills to mask recycled
             # state; resumed one-token chunks can still use the decode kernels.
             assert m.seq_lens_cpu_upper_bound is not None
-            query_lens_cpu = query_start_loc_cpu.diff()
+            query_lens_cpu = m.query_lens_cpu()
             no_prior_state = (query_lens_cpu > 0) & (
                 m.seq_lens_cpu_upper_bound <= query_lens_cpu
             )
@@ -390,7 +390,7 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             query_lens = query_start_loc[1:] - query_start_loc[:-1]
             assert spec_sequence_masks_cpu is not None
             non_spec_sequence_masks_cpu = ~spec_sequence_masks_cpu
-            query_lens_cpu = query_start_loc_cpu[1:] - query_start_loc_cpu[:-1]
+            query_lens_cpu = m.query_lens_cpu()
             spec_query_lens_cpu = query_lens_cpu[spec_sequence_masks_cpu]
             if spec_query_lens_cpu.numel() > 0 and not self._adaptive_verification:
                 first_spec_sequence_length = int(spec_query_lens_cpu[0])
