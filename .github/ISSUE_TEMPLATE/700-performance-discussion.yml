@@ -1,0 +1,59 @@
+name: ⚡ Discussion on the performance of nabla-vllm
+description: Submit a proposal/discussion about the performance of nabla-vllm
+title: "[Performance]: "
+labels: ["performance"]
+
+body:
+- type: markdown
+  attributes:
+    value: >
+      #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/zhangxin81/nabla-vllm/issues?q=is%3Aissue+sort%3Acreated-desc+).
+- type: textarea
+  attributes:
+    label: Proposal to improve performance
+    description: >
+      How do you plan to improve nabla-vllm's performance?
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Report of performance regression
+    description: >
+      Include both source commits, checkpoint identity, GPU/Torch/CUDA, precision, full commands, request shapes, repetitions, failed requests and output/accuracy checks. Distinguish kernel, forward and full-service results. You may want to run the benchmark script at https://github.com/zhangxin81/nabla-vllm/tree/main/benchmarks/specialized .
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Misc discussion on performance
+    description: >
+      Anything about the performance.
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Source, target model, GPU and benchmark configuration
+    description: |
+      Please run the following and paste the output below.
+      ```sh
+      wget https://raw.githubusercontent.com/zhangxin81/nabla-vllm/main/vllm/collect_env.py
+      # For security purposes, please feel free to check the contents of collect_env.py before running it.
+      .venv/bin/python collect_env.py
+      ```
+      It is suggested to download and execute the latest script, as vllm might frequently update the diagnosis information needed for accurately and quickly responding to issues.
+    value: |
+      ```text
+      The output of `.venv/bin/python collect_env.py`
+      ```
+  validations:
+    required: false
+- type: markdown
+  attributes:
+    value: >
+      Thanks for contributing 🎉!
+- type: checkboxes
+  id: askllm
+  attributes:
+    label: Before submitting a new issue...
+    options:
+      - label: Make sure you searched this repository for related issues and checked the [target-model scope and benchmark configuration](https://github.com/zhangxin81/nabla-vllm/blob/main/README.md).
+        required: true

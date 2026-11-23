@@ -1,0 +1,47 @@
+name: 🛠️ Installation
+description: Report an issue here when you hit errors during installation.
+title: "[Installation]: "
+labels: ["installation"]
+
+body:
+- type: markdown
+  attributes:
+    value: >
+      #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/zhangxin81/nabla-vllm/issues?q=is%3Aissue+sort%3Acreated-desc+).
+- type: textarea
+  attributes:
+    label: Your current environment
+    description: |
+      Please run the following and paste the output below.
+      ```sh
+      wget https://raw.githubusercontent.com/zhangxin81/nabla-vllm/main/vllm/collect_env.py
+      # For security purposes, please feel free to check the contents of collect_env.py before running it.
+      .venv/bin/python collect_env.py
+      ```
+      It is suggested to download and execute the latest script, as vllm might frequently update the diagnosis information needed for accurately and quickly responding to issues.
+    value: |
+      ```text
+      The output of `.venv/bin/python collect_env.py`
+      ```
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: How you are installing nabla-vllm
+    description: |
+      Paste the source commit, build/install command, NVIDIA GPU, Torch/CUDA versions and native artifact source.
+    value: |
+      ```sh
+      uv pip install -vvv -e .
+      ```
+- type: markdown
+  attributes:
+    value: >
+      Thanks for contributing 🎉!
+- type: checkboxes
+  id: askllm
+  attributes:
+    label: Before submitting a new issue...
+    options:
+      - label: Make sure you searched this repository for related issues and checked the [target-model scope and benchmark configuration](https://github.com/zhangxin81/nabla-vllm/blob/main/README.md).
+        required: true

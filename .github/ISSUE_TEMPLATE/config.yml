@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: nabla-vllm questions
+    url: https://github.com/zhangxin81/nabla-vllm/issues
+    about: Ask about the target models, cache management, or P/D serving in nabla-vllm

@@ -1,0 +1,608 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Multi-GPU equivalence tests for Qwen4Exp HC and MoE sequence parallelism."""
+
+from dataclasses import MISSING, fields
+from itertools import accumulate
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+import torch
+import torch.multiprocessing as mp
+from torch import nn
+from transformers import Qwen4ExpTextConfig
+
+from vllm import SamplingParams
+from vllm.platforms import current_platform
+from vllm.transformers_utils.utils import maybe_model_redirect
+
+if not current_platform.is_cuda_alike():
+    pytest.skip("Qwen4Exp SP requires CUDA or ROCm", allow_module_level=True)
+
+from tests.models.utils import TokensTextLogprobs, check_logprobs_close
+from tests.utils import multi_gpu_test
+from vllm.config import (
+    EngramConfig,
+    ModelConfig,
+    ParallelConfig,
+    VllmConfig,
+    set_current_vllm_config,
+)
+from vllm.distributed import (
+    cleanup_dist_env_and_memory,
+    init_distributed_environment,
+    initialize_model_parallel,
+    tensor_model_parallel_all_reduce,
+)
+from vllm.distributed.parallel_state import graph_capture
+from vllm.forward_context import set_forward_context
+from vllm.model_executor.layers.linear import RowParallelLinear
+from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+from vllm.models.common.ops.sequence_parallel import (
+    sp_all_gather,
+    sp_padding_mask,
+    sp_shard,
+)
+from vllm.models.qwen4_exp.nvidia import model as qwen4_model
+from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpDecoderLayer
+from vllm.utils.network_utils import get_open_port
+from vllm.v1.attention.backends.short_conv_attn import PleShortConvAttentionMetadata
+from vllm.v1.worker.workspace import init_workspace_manager, reset_workspace_manager
+
+from .test_ple import _ConvBatchCase, _make_conv_metadata
+
+
+class _TPAttentionProjection(nn.Module):
+    """Keep real TP communication without setting up an attention KV cache."""
+
+    def __init__(self, config, *, reduce_results: bool, **kwargs) -> None:
+        super().__init__()
+        self.proj = RowParallelLinear(
+            config.hidden_size,
+            config.hidden_size,
+            bias=False,
+            input_is_parallel=False,
+            reduce_results=reduce_results,
+        )
+
+    def forward(self, hidden_states: torch.Tensor):
+        return self.proj(hidden_states)[0]
+
+
+def _make_config(rank: int, *, hc_sp: bool = False, moe_sp: bool = False) -> VllmConfig:
+    """Configure HC SP explicitly or MoE SP through TP=2, DP=2 and EP."""
+    config = VllmConfig(
+        parallel_config=ParallelConfig(
+            tensor_parallel_size=2,
+            data_parallel_size=2 if moe_sp else 1,
+            data_parallel_rank=rank // 2,
+            enable_expert_parallel=moe_sp,
+            enable_hc_sp=hc_sp,
+            all2all_backend="allgather_reducescatter",
+        ),
+    )
+    config.model_config = SimpleNamespace(
+        architecture="Qwen4ExpForCausalLM",
+        is_moe=True,
+        sleep_mode_offload_cudagraph=False,
+        hf_text_config=Qwen4ExpTextConfig(
+            vocab_size=128,
+            eos_token_id=0,
+            hidden_size=128,
+            hc_count=2,
+            hc_lowrank=16,
+            num_hidden_layers=1,
+            layer_types=["linear_attention"],
+            num_experts=4,
+            num_experts_per_tok=2,
+            moe_intermediate_size=256,
+            shared_expert_intermediate_size=256,
+            ple_layer_ids=[] if moe_sp else [1],
+            ple_embed_dim=128,
+            heads_per_ngram=2,
+            ngram_vocab_size_base=32,
+            make_ngram_vocab_size_divisible_by=64,
+        ),
+        dtype=torch.bfloat16,
+    )
+    config.engram_config = EngramConfig(cpu_offload=False)
+    return config
+
+
+def _make_decoder(config: VllmConfig, rank: int) -> Qwen4ExpDecoderLayer:
+    """Use the production constructor and identical initial weights for both modes."""
+    with (
+        set_current_vllm_config(config),
+        patch.object(qwen4_model, "QwenGatedDeltaNetAttention", _TPAttentionProjection),
+    ):
+        layer = Qwen4ExpDecoderLayer(
+            config, config.model_config.hf_text_config.layer_types[0], "model.layers.0"
+        )
+        torch.manual_seed(12)
+        for param in layer.parameters():
+            param.normal_(std=0.08)
+        # Distinct rank contributions expose missing or duplicate reductions.
+        layer.linear_attn.proj.weight.add_(rank * 0.01)
+        experts = layer.mlp.experts.routed_experts
+        if config.parallel_config.enable_expert_parallel:
+            experts.w13_weight.add_(rank * 0.01)
+        experts.quant_method.process_weights_after_loading(experts)
+    return layer
+
+
+def _check_decoder_ple(rank: int) -> None:
+    """Compare HC SP with full tokens across a PLE prefill and cached decode."""
+    configs = [_make_config(rank, hc_sp=enabled) for enabled in (False, True)]
+    layers = [_make_decoder(config, rank) for config in configs]
+    states = []
+    for layer in layers:
+        ple = layer.ple
+        assert ple is not None
+        state = torch.zeros(2, ple.hc_hidden_size, ple.conv_state_len)
+        if not is_conv_state_dim_first():
+            state = state.transpose(-1, -2).contiguous()
+        ple.kv_cache = (state,)
+        states.append(state)
+
+    # Three prefill tokens straddle the TP=2 boundary and require SP padding.
+    for case in (
+        _ConvBatchCase(prefill_query_lens=(3,)),
+        _ConvBatchCase(num_decodes=1),
+    ):
+        layout, num_tokens = _make_conv_metadata(case, torch.device("cuda", rank))
+        metadata_args = {
+            f.name: None
+            for f in fields(PleShortConvAttentionMetadata)
+            if f.default is MISSING and f.default_factory is MISSING
+        }
+        metadata = PleShortConvAttentionMetadata(**(metadata_args | vars(layout)))
+        ids = torch.randint(0, 128, (num_tokens,))
+        positions = torch.arange(num_tokens).expand(3, -1)
+        qsl = torch.tensor([0, num_tokens], dtype=torch.int32)
+        context = torch.zeros(1, layers[0].config.ngram_size - 1, dtype=torch.int64)
+        hidden = torch.randn(num_tokens, 256)
+        block = torch.randn(num_tokens, 128)
+        injection = torch.randn(num_tokens, 2)
+        outputs = []
+        for config, layer in zip(configs, layers):
+            assert layer.ple is not None
+            inputs = (hidden, block, injection)
+            if config.parallel_config.enable_hc_sp:
+                inputs = tuple(sp_shard(x) for x in inputs)
+            with (
+                set_current_vllm_config(config),
+                set_forward_context({layer.ple.prefix: metadata}, config),
+            ):
+                if hasattr(layer.ple, "start_prefetch"):
+                    layer.ple.start_prefetch(ids, qsl, context)
+                output = layer(
+                    *inputs,
+                    positions,
+                    input_ids=ids,
+                    query_start_loc=qsl,
+                    ngram_context=context,
+                )
+                if config.parallel_config.enable_hc_sp:
+                    # ROCm all-gather requires contiguous inputs.
+                    output = tuple(
+                        sp_all_gather(x.contiguous())[:num_tokens] for x in output
+                    )
+                # A later MoE call may reuse workspace-backed output storage.
+                outputs.append(tuple(x.clone() for x in output))
+        torch.testing.assert_close(outputs[1], outputs[0], atol=0.002, rtol=0.02)
+        torch.testing.assert_close(states[1], states[0], atol=0.002, rtol=0.02)
+
+
+def _check_moe_sp(rank: int, config: VllmConfig) -> None:
+    """Compare native SP with full-token GR and the MoE wrapper's public interface."""
+    layer = _make_decoder(config, rank)
+    dp_rank = config.parallel_config.data_parallel_rank
+    counts = torch.tensor([3, 5], device="cpu")
+    num_tokens = int(counts[dp_rank])
+    torch.manual_seed(30 + dp_rank)
+    hidden = torch.randn(num_tokens, 256)
+    positions = torch.arange(num_tokens)
+    # Include runner padding in addition to the padding introduced by SP.
+    padding = sp_padding_mask(positions == num_tokens - 1, hidden)
+    with (
+        set_current_vllm_config(config),
+        set_forward_context(
+            None,
+            config,
+            num_tokens=num_tokens,
+            num_tokens_across_dp=counts,
+            is_padding=padding,
+        ),
+    ):
+        # The reference keeps full GR rows. MoE handles its own chunk and gather.
+        full_hidden, attn_input, injection = layer.attn_hyper_connection.mix(hidden)
+        attn_output = tensor_model_parallel_all_reduce(layer.linear_attn(attn_input))
+        full_hidden, moe_input, injection = layer.mlp_hyper_connection.combine_and_mix(
+            full_hidden, attn_output, injection
+        )
+        assert injection is not None
+        expected = tuple(
+            x.clone() for x in (full_hidden, layer.mlp(moe_input), injection)
+        )
+        output = layer(
+            sp_shard(hidden),
+            None,
+            None,
+            positions,
+            input_ids=None,
+            query_start_loc=None,
+            ngram_context=None,
+        )
+        actual = tuple(sp_all_gather(x.contiguous())[:num_tokens] for x in output)
+    torch.testing.assert_close(actual, expected, atol=0.002, rtol=0.02)
+
+
+def _run_sp(rank: int, port: int, moe_sp: bool) -> None:
+    """Initialize rank-local runtime state and run one equivalence check."""
+    torch.accelerator.set_device_index(rank)
+    torch.set_num_threads(1)
+    config = _make_config(rank, moe_sp=moe_sp)
+    init_distributed_environment(
+        world_size=4 if moe_sp else 2,
+        rank=rank,
+        local_rank=rank,
+        distributed_init_method=f"tcp://127.0.0.1:{port}",
+    )
+    try:
+        # Spawned ranks bypass the GPU worker's workspace initialization.
+        init_workspace_manager(torch.device(f"cuda:{rank}"))
+        with set_current_vllm_config(config):
+            initialize_model_parallel(tensor_model_parallel_size=2)
+            with torch.device(f"cuda:{rank}"), torch.inference_mode():
+                torch.set_default_dtype(torch.bfloat16)
+                if moe_sp:
+                    _check_moe_sp(rank, config)
+                else:
+                    _check_decoder_ple(rank)
+    finally:
+        reset_workspace_manager()
+        cleanup_dist_env_and_memory()
+
+
+@multi_gpu_test(num_gpus=2)
+def test_hc_sp_decoder_and_ple() -> None:
+    """HC SP preserves decoder output and PLE cache across a token-shard boundary."""
+    mp.spawn(_run_sp, args=(get_open_port(), False), nprocs=2)
+
+
+@multi_gpu_test(num_gpus=4)
+def test_moe_sp_equivalence(monkeypatch) -> None:
+    """Native MoE SP preserves outputs with unequal DP batches and padding."""
+    monkeypatch.setenv("VLLM_MOE_SKIP_PADDING", "1")
+    mp.spawn(_run_sp, args=(get_open_port(), True), nprocs=4)
+
+
+def _run_ple_layout_transitions(rank: int, port: int, model_dir: str) -> None:
+    """Use real PLE modules and graph replay across full/sharded token layouts."""
+    from vllm.models.qwen4_exp.nvidia.ple_layer import Qwen4ExpPLELayer
+
+    device = torch.device("cuda", rank)
+    torch.accelerator.set_device_index(rank)
+    torch.set_num_threads(1)
+    config = VllmConfig(
+        model_config=ModelConfig(
+            model=model_dir,
+            skip_tokenizer_init=True,
+            dtype="bfloat16",
+            max_model_len=128,
+        ),
+        parallel_config=ParallelConfig(tensor_parallel_size=4, enable_hc_sp=True),
+        engram_config=EngramConfig(cpu_offload=False),
+    )
+    init_distributed_environment(
+        world_size=4,
+        rank=rank,
+        local_rank=rank,
+        distributed_init_method=f"tcp://127.0.0.1:{port}",
+    )
+    try:
+        init_workspace_manager(device)
+        with set_current_vllm_config(config):
+            initialize_model_parallel(tensor_model_parallel_size=4)
+            with torch.device(device), torch.inference_mode():
+                layers = [
+                    Qwen4ExpPLELayer(
+                        config.model_config.hf_text_config,
+                        config,
+                        prefix=f"layout_{enabled}.ple",
+                        use_sequence_parallel=enabled,
+                    )
+                    for enabled in (False, True)
+                ]
+                states = []
+                for layer in layers:
+                    # Dyadic parameters make the projection exact across row counts.
+                    for param in layer.parameters():
+                        values = torch.arange(param.numel(), device=device) % 7 - 3
+                        param.copy_(values.reshape(param.shape) / 256)
+                    state = torch.zeros(
+                        4,
+                        layer.hc_hidden_size,
+                        layer.conv_state_len,
+                        dtype=torch.bfloat16,
+                    )
+                    if not is_conv_state_dim_first():
+                        state = state.transpose(-1, -2).contiguous()
+                    layer.kv_cache = (state,)
+                    states.append(state)
+                for step, case in enumerate(
+                    (
+                        _ConvBatchCase(prefill_query_lens=(5,)),
+                        _ConvBatchCase(num_decodes=1),
+                        _ConvBatchCase(num_decodes=2),
+                        _ConvBatchCase(num_decodes=1, prefill_query_lens=(3,)),
+                        _ConvBatchCase(num_decodes=1),
+                    )
+                ):
+                    layout, num_tokens = _make_conv_metadata(case, device)
+                    required = {
+                        f.name: None
+                        for f in fields(PleShortConvAttentionMetadata)
+                        if f.default is MISSING and f.default_factory is MISSING
+                    }
+                    metadata = PleShortConvAttentionMetadata(
+                        **(required | vars(layout))
+                    )
+                    ids = (torch.arange(num_tokens) * 17 + step) % 128
+                    lengths = [1] * case.num_decodes + list(case.prefill_query_lens)
+                    qsl = torch.tensor(
+                        [0, *accumulate(lengths)],
+                        dtype=torch.int32,
+                    )
+                    context = torch.zeros(len(lengths), 2, dtype=torch.int64)
+                    hidden = (
+                        torch.arange(num_tokens * 512).reshape(num_tokens, 512) % 13 - 6
+                    ).to(torch.bfloat16) / 8
+                    use_sp = num_tokens >= 4
+                    with set_forward_context({layers[0].prefix: metadata}, config):
+                        expected = layers[0](hidden, ids, qsl, context).clone()
+                    local = sp_shard(hidden) if use_sp else hidden
+                    initial_state = states[1].clone()
+                    with set_forward_context({layers[1].prefix: metadata}, config):
+                        layers[1](
+                            local, ids, qsl, context, use_sequence_parallel=use_sp
+                        )
+                        states[1].copy_(initial_state)
+                        graph = torch.cuda.CUDAGraph()
+                        with graph_capture(device), torch.cuda.graph(graph):
+                            actual = layers[1](
+                                local,
+                                ids,
+                                qsl,
+                                context,
+                                use_sequence_parallel=use_sp,
+                            )
+                        states[1].copy_(initial_state)
+                        graph.replay()
+                        if use_sp:
+                            actual = sp_all_gather(actual)[:num_tokens]
+                        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+                        torch.testing.assert_close(states[1], states[0], atol=0, rtol=0)
+    finally:
+        reset_workspace_manager()
+        cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="NVIDIA PLE implementation")
+@multi_gpu_test(num_gpus=4)
+def test_ple_cache_survives_token_layout_transitions(tmp_path) -> None:
+    """SP layout changes preserve PLE output and conv state under graph replay."""
+    config = Qwen4ExpTextConfig(
+        architectures=["Qwen4ExpForCausalLM"],
+        vocab_size=128,
+        eos_token_id=1,
+        hidden_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=32,
+        layer_types=["linear_attention"],
+        hc_count=4,
+        hc_lowrank=16,
+        num_experts=4,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        shared_expert_intermediate_size=128,
+        ple_layer_ids=[1],
+        ple_embed_dim=128,
+        heads_per_ngram=2,
+        ngram_size=3,
+        ngram_vocab_size_base=32,
+        make_ngram_vocab_size_divisible_by=64,
+    )
+    config.save_pretrained(tmp_path)
+    mp.spawn(
+        _run_ple_layout_transitions,
+        args=(get_open_port(), str(tmp_path)),
+        nprocs=4,
+    )
+
+
+_hc_layout_rows: list[tuple[int, int]] = []
+
+
+def _record_hc_layout(module, args, kwargs) -> None:
+    _hc_layout_rows.append(
+        (kwargs["positions"].shape[-1], kwargs["hidden_states"].shape[0])
+    )
+
+
+def _observe_hc_layout(model) -> None:
+    from vllm.models.qwen4_exp.nvidia.model import Qwen4ExpDecoderLayer
+
+    _hc_layout_rows.clear()
+    layer = next(m for m in model.modules() if isinstance(m, Qwen4ExpDecoderLayer))
+    layer.register_forward_pre_hook(_record_hc_layout, with_kwargs=True)
+
+
+def _observed_hc_layout(model) -> list[tuple[int, int]]:
+    return _hc_layout_rows
+
+
+@pytest.mark.skipif(
+    not current_platform.is_cuda()
+    or not current_platform.is_device_capability_family(90),
+    reason="HC-SP small-batch fallback requires SM90",
+)
+@pytest.mark.usefixtures("enable_pickle")
+@multi_gpu_test(num_gpus=4)
+def test_hc_sp_small_batch_serving(vllm_runner) -> None:
+    """Real weights preserve generation and prefix reuse across HC layouts."""
+    model = maybe_model_redirect("Qwen/Qwen3.8-Flash-Next-FP8")
+    prompt = (
+        "The following sentence is context. " * 256
+        + "Question: What is 17 plus 23? Answer:"
+    )
+    params = SamplingParams(
+        temperature=0, max_tokens=16, ignore_eos=True, logprobs=5, seed=42
+    )
+    outputs: list[list[TokensTextLogprobs]] = []
+    for fallback in (True, False):
+        with vllm_runner(
+            model,
+            tensor_parallel_size=4,
+            enable_expert_parallel=True,
+            distributed_executor_backend="mp",
+            max_model_len=4096,
+            max_num_seqs=4,
+            max_num_batched_tokens=8192,
+            block_size=None,
+            kv_cache_memory_bytes=2 << 30,
+            enable_chunked_prefill=True,
+            enable_prefix_caching=True,
+            enable_hc_sp=True,
+            additional_config={"hc_sp_small_batch_fallback": fallback},
+            enforce_eager=True,
+        ) as runner:
+            runner.apply_model(_observe_hc_layout)
+            runs: list[TokensTextLogprobs] = []
+            for step, count in enumerate((1, 2, 4, 1)):
+                responses = runner.llm.generate(
+                    [prompt] * count, params, use_tqdm=False
+                )
+                if step == 3:
+                    cached_tokens = responses[0].num_cached_tokens
+                    assert cached_tokens is not None and cached_tokens > 0
+                runs.extend(
+                    (list(out.token_ids), out.text, out.logprobs)
+                    for response in responses
+                    for out in response.outputs
+                )
+            layouts = runner.apply_model(_observed_hc_layout)
+            assert len(layouts) == 4
+            for rows in layouts:
+                assert (2, 2 if fallback else 1) in rows
+                assert (4, 1) in rows
+                assert any(tokens > 4 for tokens, _ in rows)
+            outputs.append(runs)
+    check_logprobs_close(
+        outputs_0_lst=outputs[0],
+        outputs_1_lst=outputs[1],
+        name_0="adaptive_hc_sp",
+        name_1="static_hc_sp",
+    )
+
+
+def _run_qsa_tp_prefill(rank: int, port: int, tp_size: int = 4) -> None:
+    """Check real collectives, ragged rows, offset views and exact score ties."""
+    from vllm.distributed import get_tp_group
+    from vllm.models.qwen4_exp.nvidia.ops import qsa_indexer as ops
+
+    torch.accelerator.set_device_index(rank)
+    torch.set_num_threads(1)
+    init_distributed_environment(
+        world_size=tp_size,
+        rank=rank,
+        local_rank=rank,
+        distributed_init_method=f"tcp://127.0.0.1:{port}",
+    )
+    try:
+        config = VllmConfig(
+            parallel_config=ParallelConfig(tensor_parallel_size=tp_size)
+        )
+        with set_current_vllm_config(config):
+            initialize_model_parallel(tensor_model_parallel_size=tp_size)
+            device = torch.device(f"cuda:{rank}")
+            gen = torch.Generator().manual_seed(37)
+            cache = torch.randn(32, 208, 1, 128, generator=gen).bfloat16().to(device)
+            table = torch.randperm(32, generator=gen).int().reshape(2, 16).to(device)
+            q = torch.randn(44, 4, 128, generator=gen).bfloat16().to(device)[7:]
+            starts = torch.tensor([7, 10, 44], dtype=torch.int32, device=device)
+            visible = torch.cat((torch.arange(254, 257), torch.arange(2015, 2049)))
+            visible = visible.int().to(device)
+            for tied in (False, True):
+                if tied:
+                    q.zero_()
+                for force_chunk in (False, True):
+                    with pytest.MonkeyPatch.context() as m:
+                        m.setenv(
+                            "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB",
+                            "0" if force_chunk else "4",
+                        )
+                        expected = torch.empty(
+                            (37, 512), dtype=torch.int32, device=device
+                        )
+                        backing = torch.full(
+                            (44, 512), -99, dtype=torch.int32, device=device
+                        )
+                        actual = backing[7:]
+                        args = (q, cache, table, starts, visible, 2048, 4, 34)
+                        ops.qsa_select_paged_prefill(*args, expected, 8192)
+                        ops.qsa_select_paged_prefill(
+                            *args, actual, 8192, tp_group=get_tp_group()
+                        )
+                        assert (backing[:7] == -99).all()
+                        workspace = torch.empty(
+                            37 * 2048, dtype=torch.float32, device=device
+                        )
+                        logits = ops._prefill_logits(
+                            q, cache, table, starts, visible, workspace, 34, 2048, 0, 37
+                        )
+                        columns = torch.arange(2048, device=device)[None, :]
+                        assert torch.isfinite(
+                            logits[columns.expand_as(logits) < visible[:, None]]
+                        ).all()
+                        logits.masked_fill_(columns >= visible[:, None], -torch.inf)
+                        scores = []
+                        for indices in (expected, actual):
+                            assert (
+                                (indices >= -1) & (indices < visible[:, None])
+                            ).all()
+                            ordered = indices.sort().values
+                            assert not (
+                                (ordered[:, 1:] == ordered[:, :-1])
+                                & (ordered[:, 1:] >= 0)
+                            ).any()
+                            values = logits.gather(1, indices.clamp_min(0).long())
+                            scores.append(
+                                values.masked_fill(indices < 0, -torch.inf)
+                                .sort()
+                                .values
+                            )
+                        torch.testing.assert_close(scores[1], scores[0], atol=0, rtol=0)
+                        torch.testing.assert_close(
+                            scores[1],
+                            logits.topk(512).values.sort().values,
+                            atol=0,
+                            rtol=0,
+                        )
+    finally:
+        cleanup_dist_env_and_memory()
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="NVIDIA QSA indexer")
+@multi_gpu_test(num_gpus=4)
+def test_qsa_tp_prefill_preserves_selection() -> None:
+    mp.spawn(_run_qsa_tp_prefill, args=(get_open_port(),), nprocs=4)
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="NVIDIA QSA indexer")
+@multi_gpu_test(num_gpus=8)
+def test_qsa_tp_prefill_preserves_selection_tp8() -> None:
+    mp.spawn(_run_qsa_tp_prefill, args=(get_open_port(), 8), nprocs=8)

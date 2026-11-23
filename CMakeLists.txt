@@ -1,0 +1,1440 @@
+cmake_minimum_required(VERSION 3.26)
+
+# When building directly using CMake, make sure you run the install step
+# (it places the .so files in the correct location).
+#
+# Example:
+# mkdir build && cd build
+# cmake -G Ninja -DVLLM_PYTHON_EXECUTABLE=`which python3` -DCMAKE_INSTALL_PREFIX=.. ..
+# cmake --build . --target install
+#
+# If you want to only build one target, make sure to install it manually:
+# cmake --build . --target _C
+# cmake --install . --component _C
+project(vllm_extensions LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# PyTorch headers require C++20; GCC < 11.3 has incomplete C++20 support.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "11.3")
+  message(FATAL_ERROR
+    "GCC >= 11.3 is required to build vLLM (found ${CMAKE_CXX_COMPILER_VERSION}). "
+    "PyTorch's C++20 headers require a compiler with full C++20 support. "
+    "See: https://github.com/pytorch/pytorch/pull/167929")
+endif()
+
+
+# CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
+set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
+if("$ENV{VLLM_KERNEL_SYMBOL_MAP}" STREQUAL "1")
+  set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
+
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/utils.cmake)
+
+# Suppress potential warnings about unused manually-specified variables
+set(ignoreMe "${VLLM_PYTHON_PATH}")
+
+# Prevent installation of dependencies (cutlass) by default.
+install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
+
+#
+# Supported python versions.  These versions will be searched in order, the
+# first match will be selected.  These should be kept in sync with setup.py.
+#
+set(PYTHON_SUPPORTED_VERSIONS "3.11" "3.12" "3.13" "3.14")
+
+# Expected PyTorch version for the CUDA build.
+set(TORCH_SUPPORTED_VERSION_CUDA "2.14.0")
+# TORCH_NIGHTLY=1 builds run against unpinned nightly wheels, so the supported-
+# version check would always warn. Only treat it as a nightly build when the
+# value is exactly "1" (the bootstrap exports TORCH_NIGHTLY=0 by default, which
+# must NOT suppress the warning for normal builds).
+if(DEFINED ENV{TORCH_NIGHTLY} AND "$ENV{TORCH_NIGHTLY}" STREQUAL "1")
+  set(TORCH_NIGHTLY_BUILD TRUE)
+else()
+  set(TORCH_NIGHTLY_BUILD FALSE)
+endif()
+
+#
+# Try to find python package with an executable that exactly matches
+# `VLLM_PYTHON_EXECUTABLE` and is one of the supported versions.
+#
+if(VLLM_PYTHON_EXECUTABLE)
+  find_python_from_executable(${VLLM_PYTHON_EXECUTABLE} "${PYTHON_SUPPORTED_VERSIONS}")
+else()
+  message(FATAL_ERROR
+    "Please set VLLM_PYTHON_EXECUTABLE to the path of the desired python version"
+    " before running cmake configure.")
+endif()
+
+#
+# Update cmake's `CMAKE_PREFIX_PATH` with torch location.
+#
+append_cmake_prefix_path("torch" "torch.utils.cmake_prefix_path")
+
+# Ensure the 'nvcc' command is in the PATH
+find_program(NVCC_EXECUTABLE nvcc)
+if(CUDA_FOUND AND NOT NVCC_EXECUTABLE)
+    message(FATAL_ERROR "nvcc not found")
+endif()
+
+#
+# Import torch cmake configuration.
+# Torch also imports CUDA (and partially HIP) languages with some customizations,
+# so there is no need to do this explicitly with check_language/enable_language,
+# etc.
+#
+find_package(Torch REQUIRED)
+
+# Supported NVIDIA architectures.
+# This check must happen after find_package(Torch) because that's when CMAKE_CUDA_COMPILER_VERSION gets defined
+if(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.4)
+  # Rubin (10.7) can run SM100 family code, but CUDA 13.4 also supports
+  # targeting it directly.
+  set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.7;11.0;12.0")
+elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+   # starting from CUDA 12.9 and Blackwell (10.0), we use family-specific targets (10.0f, 12.0f, etc)
+   # to support the whole generation without specifying all sub-architectures
+   # see: https://developer.nvidia.com/blog/nvidia-blackwell-and-nvidia-cuda-12-9-introduce-family-specific-architecture-features/
+  set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;11.0;12.0")
+elseif(DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+  set(CUDA_SUPPORTED_ARCHS "7.5;8.0;8.6;8.7;8.9;9.0;10.0;10.1;10.3;12.0;12.1")
+else()
+  set(CUDA_SUPPORTED_ARCHS "7.0;7.5;8.0;8.6;8.7;8.9;9.0")
+endif()
+
+#
+# spinloop extension (pure CXX; must stay above the non-CUDA device branch so
+# CPU builds define the target before the early return)
+# This extension requires SABI 3.11 since it relies on Py_buffer support.
+#
+set(VLLM_SPINLOOP_EXT_SRC "csrc/spinloop.cpp")
+set(SPINLOOP_COMPILE_FLAGS "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+  list(APPEND SPINLOOP_COMPILE_FLAGS "-mmwaitx")
+endif()
+define_extension_target(
+  spinloop
+  DESTINATION vllm
+  LANGUAGE CXX
+  SOURCES ${VLLM_SPINLOOP_EXT_SRC}
+  COMPILE_FLAGS ${SPINLOOP_COMPILE_FLAGS}
+  USE_SABI 3.11
+  WITH_SOABI)
+
+#
+# fs_io extension (pure CXX; must stay above the non-CUDA device branch
+# so CPU builds define the target before the early return).
+# GIL-releasing filesystem helpers for FileSystemTierManager.
+#
+define_extension_target(
+  fs_io_C
+  DESTINATION vllm
+  LANGUAGE CXX
+  SOURCES csrc/fs_io.cpp
+  USE_SABI 3.11
+  WITH_SOABI)
+
+#
+# Only CUDA inference extensions are built.
+if(NOT VLLM_TARGET_DEVICE STREQUAL "cuda")
+  message(FATAL_ERROR "Only CUDA inference builds are supported")
+endif()
+
+#
+# Set up GPU language and check the torch version and warn if it isn't
+# what is expected.
+#
+if(CUDA_FOUND)
+  set(VLLM_GPU_LANG "CUDA")
+
+if(NOT TORCH_NIGHTLY_BUILD AND NOT Torch_VERSION VERSION_EQUAL ${TORCH_SUPPORTED_VERSION_CUDA})
+    message(WARNING "Pytorch version ${TORCH_SUPPORTED_VERSION_CUDA} "
+      "expected for CUDA build, saw ${Torch_VERSION} instead.")
+endif()
+
+else()
+  message(FATAL_ERROR "Can't find CUDA installation.")
+endif()
+
+
+  #
+  # For cuda we want to be able to control which architectures we compile for on
+  # a per-file basis in order to cut down on compile time. So here we extract
+  # the set of architectures we want to compile for and remove the from the
+  # CMAKE_CUDA_FLAGS so that they are not applied globally.
+  #
+  # `+PTX` in TORCH_CUDA_ARCH_LIST is not preserved here. If a kernel really
+  # needs PTX, add `+PTX` to that kernel's component-specific arch list below.
+  #
+  clear_cuda_gencode_flags(CUDA_ARCH_FLAGS)
+  warn_if_ptx_arch_requested("${CUDA_ARCH_FLAGS}")
+  extract_unique_cuda_archs_ascending(CUDA_ARCHS "${CUDA_ARCH_FLAGS}")
+  message(STATUS "CUDA target architectures: ${CUDA_ARCHS}")
+  # Filter the target architectures by the supported supported archs
+  # since for some files we will build for all CUDA_ARCHS.
+  cuda_archs_loose_intersection(CUDA_ARCHS
+    "${CUDA_SUPPORTED_ARCHS}" "${CUDA_ARCHS}")
+  message(STATUS "CUDA supported target architectures: ${CUDA_ARCHS}")
+if(NOT CUDA_ARCHS)
+    message(FATAL_ERROR
+      "No supported CUDA architectures; the build would produce a binary "
+      "with no usable kernels. Detected gencode flags: ${CUDA_ARCH_FLAGS}; "
+      "supported: ${CUDA_SUPPORTED_ARCHS}. "
+      "Set TORCH_CUDA_ARCH_LIST for your GPU (e.g. 12.0).")
+endif()
+
+#
+# Query torch for additional GPU compilation flags for the given
+# `VLLM_GPU_LANG`.
+# The final set of arches is stored in `VLLM_GPU_FLAGS`.
+#
+get_torch_gpu_compiler_flags(VLLM_GPU_FLAGS ${VLLM_GPU_LANG})
+
+#
+# Set nvcc parallelism.
+#
+if(NVCC_THREADS AND VLLM_GPU_LANG STREQUAL "CUDA")
+  list(APPEND VLLM_GPU_FLAGS "--threads=${NVCC_THREADS}")
+endif()
+
+#
+# Set compression mode for CUDA >=13.x.
+#
+if(VLLM_GPU_LANG STREQUAL "CUDA" AND
+   DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+   CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+  list(APPEND VLLM_GPU_FLAGS "--compress-mode=size")
+endif()
+
+#
+# Set CUDA include flags for CXX compiler.
+#
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include")
+if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include/cccl")
+endif()
+
+#
+# Use FetchContent for C++ dependencies that are compiled as part of vLLM's build process.
+# setup.py will override FETCHCONTENT_BASE_DIR to play nicely with sccache.
+# Each dependency that produces build artifacts should override its BINARY_DIR to avoid
+# conflicts between build types. It should instead be set to ${CMAKE_BINARY_DIR}/<dependency>.
+#
+include(FetchContent)
+file(MAKE_DIRECTORY ${FETCHCONTENT_BASE_DIR}) # Ensure the directory exists
+message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
+
+
+#
+# Define other extension targets
+#
+
+#
+# cumem_allocator extension
+#
+
+set(VLLM_CUMEM_EXT_SRC
+  "csrc/cumem_allocator.cpp")
+
+set_gencode_flags_for_srcs(
+  SRCS "${VLLM_CUMEM_EXT_SRC}"
+  CUDA_ARCHS "${CUDA_ARCHS}")
+
+  message(STATUS "Enabling cumem allocator extension.")
+    # link against cuda driver library
+    list(APPEND CUMEM_LIBS CUDA::cuda_driver)
+  define_extension_target(
+    cumem_allocator
+    DESTINATION vllm
+    LANGUAGE CXX
+    SOURCES ${VLLM_CUMEM_EXT_SRC}
+    LIBRARIES ${CUMEM_LIBS}
+    USE_SABI 3.8
+    WITH_SOABI)
+
+#
+# Legacy _C extension (ROCm only — CUDA ops migrated to _C_stable_libtorch)
+#
+
+
+  #
+  # _C_stable_libtorch extension (ops registered via STABLE_TORCH_LIBRARY)
+  #
+if(Torch_VERSION VERSION_GREATER_EQUAL "2.13" AND
+     Torch_VERSION VERSION_LESS "2.14")
+    # hotfix for https://github.com/pytorch/pytorch/pull/190493
+    # delete after we bump to 2.14
+    list(GET TORCH_INCLUDE_DIRS 0 TORCH_INCLUDE_DIR)
+    set(_stable_hdr_rel "torch/csrc/stable/stableivalue_conversions.h")
+    file(READ "${TORCH_INCLUDE_DIR}/${_stable_hdr_rel}"
+      TORCH_STABLE_STRING_CONTENTS)
+
+if(TORCH_STABLE_STRING_CONTENTS MATCHES "auto strptr = new std::string")
+      set(TORCH_SHADOW_INCLUDE_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/torch_patched_headers")
+
+      file(MAKE_DIRECTORY "${TORCH_SHADOW_INCLUDE_DIR}/torch/csrc/stable")
+      file(COPY_FILE
+        "${TORCH_INCLUDE_DIR}/${_stable_hdr_rel}"
+        "${TORCH_SHADOW_INCLUDE_DIR}/${_stable_hdr_rel}")
+
+      execute_process(
+        COMMAND patch --batch --forward -p1
+          "--input=${CMAKE_CURRENT_LIST_DIR}/cmake/patches/pytorch_stable_string.patch"
+        WORKING_DIRECTORY "${TORCH_SHADOW_INCLUDE_DIR}"
+        COMMAND_ERROR_IS_FATAL ANY)
+
+      execute_process(
+        COMMAND ${Python_EXECUTABLE} -c
+          "import json,sys; from pathlib import Path; Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[3:]}))"
+          "${CMAKE_CURRENT_BINARY_DIR}/generated-source-deps.json"
+          "${TORCH_SHADOW_INCLUDE_DIR}/${_stable_hdr_rel}"
+          "${TORCH_INCLUDE_DIR}/${_stable_hdr_rel}"
+          "${CMAKE_CURRENT_LIST_DIR}/cmake/patches/pytorch_stable_string.patch"
+        COMMAND_ERROR_IS_FATAL ANY)
+
+      include_directories(BEFORE "${TORCH_SHADOW_INCLUDE_DIR}")
+endif()
+endif()
+
+  set(VLLM_STABLE_EXT_SRC
+    "csrc/torch_bindings.cpp"
+    "csrc/cuda_view.cu"
+    "csrc/cuda_utils_kernels.cu"
+    "csrc/activation_kernels.cu"
+    "csrc/muse_spark_mul_tanh_soft_cap_kernel.cu"
+    "csrc/ngram_embedding_kernels.cu"
+    "csrc/vocab_parallel_embedding_kernels.cu"
+    "csrc/quantization/activation_kernels.cu"
+    "csrc/quantization/w8a8/int8/scaled_quant.cu"
+    "csrc/quantization/w8a8/fp8/common.cu"
+    "csrc/quantization/w8a8/fp8/per_token_group_quant.cu"
+    "csrc/quantization/gptq/q_gemm.cu"
+    "csrc/pos_encoding_kernels.cu"
+    # Fused MUSE-Spark qknorm/rope/kv-insert is instantiated one unit per
+    # head_dim: with the whole op in one unit it is one of the longest compiles
+    # of a 9-arch build. _api keeps the public entry point and forwards on
+    # head_dim.
+    "csrc/fused_muse_spark_qknorm_rope_kv_insert_api.cu"
+    "csrc/fused_muse_spark_qknorm_rope_kv_insert_hd64.cu"
+    "csrc/fused_muse_spark_qknorm_rope_kv_insert_hd128.cu"
+    "csrc/fused_muse_spark_qknorm_rope_kv_insert_hd256.cu"
+    "csrc/fused_qknorm_rope_kernel.cu"
+    "csrc/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu"
+    "csrc/layernorm_kernels.cu"
+    "csrc/layernorm_quant_kernels.cu"
+    "csrc/quantization/fused_kernels/fused_layernorm_dynamic_per_token_quant.cu"
+    "csrc/quantization/fused_kernels/fused_silu_mul_block_quant.cu"
+    "csrc/attention/merge_attn_states.cu"
+    "csrc/sampler.cu"
+    "csrc/attention/dsa/topk/top_k_per_row.cu"
+    "csrc/attention/dsa/topk/topk.cu"
+    "csrc/mamba/selective_scan_fwd.cu"
+    "csrc/cache_kernels.cu"
+    "csrc/cache_kernels_fused.cu"
+    "csrc/custom_all_gather_reduce_scatter.cu"
+    "csrc/custom_all_gather_reduce_scatter_ops.cpp"
+    "csrc/custom_all_reduce.cu"
+    "csrc/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu"
+    "csrc/fused_kimi_k3_mla_key_concat_kv_cache_kernel.cu")
+
+    list(APPEND VLLM_STABLE_EXT_SRC
+      "csrc/fused_qknorm_rope_cache_kernel.cu")
+
+if(VLLM_GPU_LANG STREQUAL "CUDA" AND
+     DEFINED CMAKE_CUDA_COMPILER_VERSION AND
+     CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
+
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+      cuda_archs_loose_intersection(COOPERATIVE_TOPK_ARCHS
+        "9.0a;10.0f;10.1f;10.3f;10.7f;11.0f;12.0f;12.1f" "${CUDA_ARCHS}")
+else()
+      cuda_archs_loose_intersection(COOPERATIVE_TOPK_ARCHS
+        "9.0a;10.0a;10.1a;10.3a;12.0a;12.1a" "${CUDA_ARCHS}")
+endif()
+
+if(COOPERATIVE_TOPK_ARCHS)
+      list(APPEND VLLM_GPU_FLAGS "-DVLLM_ENABLE_COOPERATIVE_TOPK=1")
+
+endif()
+endif()
+
+    list(APPEND VLLM_STABLE_EXT_SRC
+      "csrc/hisparse_kernels.cu"
+      "csrc/attention/dcp_utils/dcp_direct_a2a_lse_reduce.cu"
+      "csrc/attention/dcp_utils/dcp_direct_kv_gather.cu"
+      "csrc/attention/dcp_utils/dcp_direct_q_gather.cu")
+
+    SET(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
+
+    # Set CUTLASS_REVISION. Used for FetchContent. Also fixes some bogus messages when building.
+    set(CUTLASS_REVISION "v4.7.1")
+
+    # Use the specified CUTLASS source directory for compilation if VLLM_CUTLASS_SRC_DIR is provided
+if(DEFINED ENV{VLLM_CUTLASS_SRC_DIR})
+      set(VLLM_CUTLASS_SRC_DIR $ENV{VLLM_CUTLASS_SRC_DIR})
+endif()
+
+if(VLLM_CUTLASS_SRC_DIR)
+if(NOT IS_ABSOLUTE VLLM_CUTLASS_SRC_DIR)
+        get_filename_component(VLLM_CUTLASS_SRC_DIR "${VLLM_CUTLASS_SRC_DIR}" ABSOLUTE)
+endif()
+      message(STATUS "The VLLM_CUTLASS_SRC_DIR is set, using ${VLLM_CUTLASS_SRC_DIR} for compilation")
+      FetchContent_Declare(cutlass SOURCE_DIR ${VLLM_CUTLASS_SRC_DIR})
+else()
+      FetchContent_Declare(
+          cutlass
+          GIT_REPOSITORY https://github.com/nvidia/cutlass.git
+          # Please keep this in sync with CUTLASS_REVISION line above.
+          GIT_TAG ${CUTLASS_REVISION}
+          GIT_PROGRESS TRUE
+
+          # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
+          # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
+          # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
+          GIT_SHALLOW TRUE
+      )
+endif()
+    FetchContent_MakeAvailable(cutlass)
+
+    list(APPEND VLLM_STABLE_EXT_SRC
+      "csrc/quantization/w8a8/cutlass/scaled_mm_entry.cu"
+      "csrc/quantization/fp4/nvfp4_quant_entry.cu"
+      "csrc/quantization/fp4/nvfp4_scaled_mm_entry.cu"
+      "csrc/quantization/awq/gemm_kernels.cu"
+      "csrc/minimax_reduce_rms_kernel.cu")
+
+    #
+    # Machete kernels
+    #
+    # The machete kernels only work on hopper and require CUDA 12.0 or later.
+    # Only build Machete kernels if we are building for something compatible with sm90a
+    cuda_archs_loose_intersection(MACHETE_ARCHS "9.0a" "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND MACHETE_ARCHS)
+      #
+      # For the Machete kernels we automatically generate sources for various
+      # preselected input type pairs and schedules.
+      # Generate sources:
+      set(MACHETE_GEN_SCRIPT
+        ${CMAKE_CURRENT_SOURCE_DIR}/csrc/quantization/machete/generate.py)
+      file(MD5 ${MACHETE_GEN_SCRIPT} MACHETE_GEN_SCRIPT_HASH)
+
+      message(STATUS "Machete generation script hash: ${MACHETE_GEN_SCRIPT_HASH}")
+      message(STATUS "Last run machete generate script hash: $CACHE{MACHETE_GEN_SCRIPT_HASH}")
+
+if(NOT DEFINED CACHE{MACHETE_GEN_SCRIPT_HASH}
+          OR NOT $CACHE{MACHETE_GEN_SCRIPT_HASH} STREQUAL ${MACHETE_GEN_SCRIPT_HASH})
+        execute_process(
+          COMMAND ${CMAKE_COMMAND} -E env
+          PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/csrc/cutlass_extensions/:${CUTLASS_DIR}/python/:${VLLM_PYTHON_PATH}:$ENV{PYTHONPATH}
+            ${Python_EXECUTABLE} ${MACHETE_GEN_SCRIPT}
+          RESULT_VARIABLE machete_generation_result
+          OUTPUT_VARIABLE machete_generation_output
+          OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/machete_generation.log
+          ERROR_FILE ${CMAKE_CURRENT_BINARY_DIR}/machete_generation.log
+        )
+
+if(NOT machete_generation_result EQUAL 0)
+          message(FATAL_ERROR "Machete generation failed."
+                              " Result: \"${machete_generation_result}\""
+                              "\nCheck the log for details: "
+                              "${CMAKE_CURRENT_BINARY_DIR}/machete_generation.log")
+else()
+          set(MACHETE_GEN_SCRIPT_HASH ${MACHETE_GEN_SCRIPT_HASH}
+              CACHE STRING "Last run machete generate script hash" FORCE)
+          message(STATUS "Machete generation completed successfully.")
+endif()
+else()
+        message(STATUS "Machete generation script has not changed, skipping generation.")
+endif()
+
+      # Add machete generated sources
+      file(GLOB MACHETE_GEN_SOURCES "csrc/quantization/machete/generated/*.cu")
+      list(APPEND VLLM_STABLE_EXT_SRC ${MACHETE_GEN_SOURCES})
+
+      # forward compatible
+      set_gencode_flags_for_srcs(
+        SRCS "${MACHETE_GEN_SOURCES}"
+        CUDA_ARCHS "${MACHETE_ARCHS}")
+
+      list(APPEND VLLM_STABLE_EXT_SRC
+        csrc/quantization/machete/machete_pytorch.cu)
+      message(STATUS "Building Machete kernels for archs: ${MACHETE_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0
+          AND MACHETE_ARCHS)
+        message(STATUS "Not building Machete kernels as CUDA Compiler version is "
+                       "not >= 12.0, we recommend upgrading to CUDA 12.0 or "
+                       "later if you intend on running w4a16 quantized models on "
+                       "Hopper.")
+else()
+        message(STATUS "Not building Machete kernels as no compatible archs "
+                       "found in CUDA target architectures")
+endif()
+endif()
+
+    # The fused MiniMax-M3 KV insert quantizes NVFP4 with SM100-family-only
+    # cvt instructions, so its SM10x/11x code is built for the family targets.
+    set(MINIMAX_M3_FUSED_SRC
+      "csrc/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu")
+    list(REMOVE_ITEM VLLM_STABLE_EXT_SRC "${MINIMAX_M3_FUSED_SRC}")
+    set_gencode_flags_for_srcs(
+      SRCS "${VLLM_STABLE_EXT_SRC}"
+      CUDA_ARCHS "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+      cuda_archs_loose_intersection(MINIMAX_M3_FUSED_ARCHS
+        "10.0f;10.7f;11.0f" "${CUDA_ARCHS}")
+else()
+      cuda_archs_loose_intersection(MINIMAX_M3_FUSED_ARCHS
+        "10.0a;10.1a;10.3a" "${CUDA_ARCHS}")
+endif()
+    foreach(_ARCH ${CUDA_ARCHS})
+if(_ARCH VERSION_LESS 10.0 OR _ARCH VERSION_GREATER_EQUAL 12.0)
+        list(APPEND MINIMAX_M3_FUSED_ARCHS "${_ARCH}")
+endif()
+    endforeach()
+    set_gencode_flags_for_srcs(
+      SRCS "${MINIMAX_M3_FUSED_SRC}"
+      CUDA_ARCHS "${MINIMAX_M3_FUSED_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${MINIMAX_M3_FUSED_SRC}")
+
+if(COOPERATIVE_TOPK_ARCHS)
+      list(APPEND VLLM_STABLE_EXT_SRC
+        "csrc/attention/dsa/topk/cooperative_topk.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "csrc/attention/dsa/topk/cooperative_topk.cu"
+        CUDA_ARCHS "${COOPERATIVE_TOPK_ARCHS}")
+endif()
+
+    # Only build Marlin kernels if we are building for at least some compatible archs.
+    # Keep building Marlin for 9.0 as there are some group sizes and shapes that
+    # are not supported by Machete yet.
+
+    # marlin arches for fp16 output
+    cuda_archs_loose_intersection(MARLIN_ARCHS "8.0+PTX" "${CUDA_ARCHS}")
+    # marlin has limited support for turing
+    cuda_archs_loose_intersection(MARLIN_SM75_ARCHS "7.5" "${CUDA_ARCHS}")
+    # marlin arches for bf16 output (we need 9.0 for bf16 atomicAdd PTX)
+    cuda_archs_loose_intersection(MARLIN_BF16_ARCHS "8.0+PTX;9.0+PTX" "${CUDA_ARCHS}")
+    # marlin arches for other files
+    cuda_archs_loose_intersection(MARLIN_OTHER_ARCHS "7.5;8.0+PTX" "${CUDA_ARCHS}")
+
+if(MARLIN_OTHER_ARCHS)
+
+      #
+      # For the Marlin kernels we automatically generate sources for various
+      # preselected input type pairs and schedules.
+      # Generate sources:
+      set(MARLIN_GEN_SCRIPT
+        ${CMAKE_CURRENT_SOURCE_DIR}/csrc/quantization/marlin/generate_kernels.py)
+      file(MD5 ${MARLIN_GEN_SCRIPT} MARLIN_GEN_SCRIPT_HASH)
+      list(JOIN CUDA_ARCHS "," CUDA_ARCHS_STR)
+      set(MARLIN_GEN_SCRIPT_HASH_AND_ARCH "${MARLIN_GEN_SCRIPT_HASH}(ARCH:${CUDA_ARCHS_STR})")
+
+      message(STATUS "Marlin generation script hash: ${MARLIN_GEN_SCRIPT_HASH_AND_ARCH}")
+      message(STATUS "Last run Marlin generate script hash: $CACHE{MARLIN_GEN_SCRIPT_HASH_AND_ARCH}")
+
+if(NOT DEFINED CACHE{MARLIN_GEN_SCRIPT_HASH_AND_ARCH}
+          OR NOT $CACHE{MARLIN_GEN_SCRIPT_HASH_AND_ARCH} STREQUAL ${MARLIN_GEN_SCRIPT_HASH_AND_ARCH})
+        execute_process(
+          COMMAND ${CMAKE_COMMAND} -E env
+          PYTHONPATH=$ENV{PYTHONPATH}
+            ${Python_EXECUTABLE} ${MARLIN_GEN_SCRIPT} ${CUDA_ARCHS_STR}
+          RESULT_VARIABLE marlin_generation_result
+          OUTPUT_VARIABLE marlin_generation_result
+          OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/marlin_generation.log
+          ERROR_FILE ${CMAKE_CURRENT_BINARY_DIR}/marlin_generation.log
+        )
+
+if(NOT marlin_generation_result EQUAL 0)
+          message(FATAL_ERROR "Marlin generation failed."
+                              " Result: \"${marlin_generation_result}\""
+                              "\nCheck the log for details: "
+                              "${CMAKE_CURRENT_BINARY_DIR}/marlin_generation.log")
+else()
+          set(MARLIN_GEN_SCRIPT_HASH_AND_ARCH ${MARLIN_GEN_SCRIPT_HASH_AND_ARCH}
+              CACHE STRING "Last run Marlin generate script hash and arch" FORCE)
+          message(STATUS "Marlin generation completed successfully.")
+endif()
+else()
+        message(STATUS "Marlin generation script has not changed, skipping generation.")
+endif()
+
+if(MARLIN_ARCHS)
+        file(GLOB MARLIN_TEMPLATE_KERNEL_SRC "csrc/quantization/marlin/sm80_kernel_*_float16.cu")
+        set_gencode_flags_for_srcs(
+          SRCS "${MARLIN_TEMPLATE_KERNEL_SRC}"
+          CUDA_ARCHS "${MARLIN_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+          set_source_files_properties(${MARLIN_TEMPLATE_KERNEL_SRC}
+            PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+        list(APPEND VLLM_STABLE_EXT_SRC ${MARLIN_TEMPLATE_KERNEL_SRC})
+
+        file(GLOB MARLIN_TEMPLATE_BF16_KERNEL_SRC "csrc/quantization/marlin/sm80_kernel_*_bfloat16.cu")
+        set_gencode_flags_for_srcs(
+          SRCS "${MARLIN_TEMPLATE_BF16_KERNEL_SRC}"
+          CUDA_ARCHS "${MARLIN_BF16_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+          set_source_files_properties(${MARLIN_TEMPLATE_BF16_KERNEL_SRC}
+            PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+        list(APPEND VLLM_STABLE_EXT_SRC ${MARLIN_TEMPLATE_BF16_KERNEL_SRC})
+endif()
+
+if(MARLIN_SM75_ARCHS)
+        file(GLOB MARLIN_TEMPLATE_SM75_KERNEL_SRC "csrc/quantization/marlin/sm75_kernel_*.cu")
+        set_gencode_flags_for_srcs(
+          SRCS "${MARLIN_TEMPLATE_SM75_KERNEL_SRC}"
+          CUDA_ARCHS "${MARLIN_SM75_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+          set_source_files_properties(${MARLIN_TEMPLATE_SM75_KERNEL_SRC}
+            PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+        list(APPEND VLLM_STABLE_EXT_SRC ${MARLIN_TEMPLATE_SM75_KERNEL_SRC})
+endif()
+
+      set(MARLIN_SRCS
+         "csrc/quantization/marlin/marlin.cu"
+         "csrc/quantization/marlin/gptq_marlin_repack.cu"
+         "csrc/quantization/marlin/awq_marlin_repack.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "${MARLIN_SRCS}"
+        CUDA_ARCHS "${MARLIN_OTHER_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+        set_source_files_properties(${MARLIN_SRCS}
+          PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+      list(APPEND VLLM_STABLE_EXT_SRC "${MARLIN_SRCS}")
+
+      message(STATUS "Building Marlin kernels for archs: ${MARLIN_OTHER_ARCHS}")
+else()
+      message(STATUS "Not building Marlin kernels as no compatible archs found"
+                     " in CUDA target architectures")
+endif()
+
+  # DeepSeek V3 fused A GEMM kernel (requires SM 9.0+, Hopper and later)
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(DSV3_FUSED_A_GEMM_ARCHS "9.0a;10.0f;10.7f;11.0f;12.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(DSV3_FUSED_A_GEMM_ARCHS "9.0a;10.0a;10.1a;10.3a;12.0a;12.1a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND DSV3_FUSED_A_GEMM_ARCHS)
+    set(DSV3_FUSED_A_GEMM_SRCS "csrc/dsv3_fused_a_gemm.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${DSV3_FUSED_A_GEMM_SRCS}"
+      CUDA_ARCHS "${DSV3_FUSED_A_GEMM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${DSV3_FUSED_A_GEMM_SRCS}")
+    message(STATUS "Building dsv3_fused_a_gemm for archs: ${DSV3_FUSED_A_GEMM_ARCHS}")
+else()
+    message(STATUS "Not building dsv3_fused_a_gemm as no compatible archs found "
+                   "in CUDA target architectures.")
+endif()
+
+  # FP32 router GEMM (H=3072, E=256, M<=32). Requires SM90+ and CUDA >= 12.0.
+  cuda_archs_sm90plus(FP32_ROUTER_GEMM_ARCHS "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND FP32_ROUTER_GEMM_ARCHS)
+    set(FP32_ROUTER_GEMM_SRCS
+      "csrc/fp32_router_gemm_entry.cu"
+      "csrc/fp32_router_gemm.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${FP32_ROUTER_GEMM_SRCS}"
+      CUDA_ARCHS "${FP32_ROUTER_GEMM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FP32_ROUTER_GEMM_SRCS}")
+    message(STATUS "Building fp32_router_gemm for archs: ${FP32_ROUTER_GEMM_ARCHS}")
+else()
+    message(STATUS "Not building fp32_router_gemm as no compatible archs found "
+                   "(requires SM90+ and CUDA >= 12.0).")
+endif()
+
+  #
+  # CUTLASS scaled_mm kernels (moved from _C to _C_stable_libtorch)
+  #
+  set(SCALED_MM_3X_ARCHS)
+  # The cutlass_scaled_mm kernels for Hopper (c3x, i.e. CUTLASS 3.x) require
+  # CUDA 12.0 or later
+  cuda_archs_loose_intersection(SCALED_MM_ARCHS "9.0a;" "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND SCALED_MM_ARCHS)
+    set(SCALED_MM_SM90_SRCS
+       "csrc/quantization/w8a8/cutlass/scaled_mm_c3x_sm90.cu"
+       "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_sm90_fp8.cu"
+       "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_sm90_int8.cu"
+       "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_azp_sm90_int8.cu"
+       "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm90_fp8.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SCALED_MM_SM90_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SCALED_MM_SM90_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_SCALED_MM_SM90=1")
+    # Let scaled_mm_c2x know it doesn't need to build these arches
+    list(APPEND SCALED_MM_3X_ARCHS "${SCALED_MM_ARCHS}")
+    message(STATUS "Building scaled_mm_c3x_sm90 for archs: ${SCALED_MM_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND SCALED_MM_ARCHS)
+      message(STATUS "Not building scaled_mm_c3x_sm90 as CUDA Compiler version is "
+                     "not >= 12.0, we recommend upgrading to CUDA 12.0 or "
+                     "later if you intend on running FP8 quantized models on "
+                     "Hopper.")
+else()
+      message(STATUS "Not building scaled_mm_c3x_sm90 as no compatible archs found "
+                     "in CUDA target architectures")
+endif()
+endif()
+
+
+  # The cutlass_scaled_mm kernels for Blackwell SM12x (c3x, i.e. CUTLASS 3.x) require
+  # CUDA 12.8 or later
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "12.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "12.0a;12.1a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+    set(SCALED_MM_SM120_SRCS
+      "csrc/quantization/w8a8/cutlass/scaled_mm_c3x_sm120.cu"
+      "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_sm120_fp8.cu"
+      "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm120_fp8.cu"
+    )
+    set_gencode_flags_for_srcs(
+      SRCS "${SCALED_MM_SM120_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SCALED_MM_SM120_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_SCALED_MM_SM120=1")
+    # Let scaled_mm_c2x know it doesn't need to build these arches
+    list(APPEND SCALED_MM_3X_ARCHS "${SCALED_MM_ARCHS}")
+    message(STATUS "Building scaled_mm_c3x_sm120 for archs: ${SCALED_MM_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+      message(STATUS "Not building scaled_mm_c3x_sm120 as CUDA Compiler version is "
+                     "not >= 12.8, we recommend upgrading to CUDA 12.8 or "
+                     "later if you intend on running FP8 quantized models on "
+                     "Blackwell.")
+else()
+      message(STATUS "Not building scaled_mm_c3x_120 as no compatible archs found "
+                     "in CUDA target architectures")
+endif()
+endif()
+
+
+  # The cutlass_scaled_mm kernels for Blackwell SM100 (c3x, i.e. CUTLASS 3.x)
+  # require CUDA 12.8 or later
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0f;10.7f;11.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0a;10.1a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+    set(SCALED_MM_SM100_SRCS
+      "csrc/quantization/w8a8/cutlass/scaled_mm_c3x_sm100.cu"
+      "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_sm100_fp8.cu"
+      "csrc/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm100_fp8.cu"
+    )
+    set_gencode_flags_for_srcs(
+      SRCS "${SCALED_MM_SM100_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SCALED_MM_SM100_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_SCALED_MM_SM100=1")
+    # Let scaled_mm_c2x know it doesn't need to build these arches
+    list(APPEND SCALED_MM_3X_ARCHS "${SCALED_MM_ARCHS}")
+    message(STATUS "Building scaled_mm_c3x_sm100 for archs: ${SCALED_MM_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+      message(STATUS "Not building scaled_mm_c3x_sm100 as CUDA Compiler version is "
+                     "not >= 12.8, we recommend upgrading to CUDA 12.8 or "
+                     "later if you intend on running FP8 quantized models on "
+                     "Blackwell.")
+else()
+      message(STATUS "Not building scaled_mm_c3x_100 as no compatible archs found "
+                     "in CUDA target architectures")
+endif()
+endif()
+
+  #
+  # For the cutlass_scaled_mm kernels we want to build the c2x (CUTLASS 2.x)
+  # kernels for the remaining archs that are not already built for 3x.
+  # (Build 8.9 for FP8)
+  cuda_archs_loose_intersection(SCALED_MM_2X_ARCHS
+    "7.5;8.0;8.7;8.9+PTX" "${CUDA_ARCHS}")
+  # subtract out the archs that are already built for 3x
+  list(REMOVE_ITEM SCALED_MM_2X_ARCHS ${SCALED_MM_3X_ARCHS})
+if(SCALED_MM_2X_ARCHS)
+    set(SCALED_MM_C2X_SRCS "csrc/quantization/w8a8/cutlass/scaled_mm_c2x.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${SCALED_MM_C2X_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_2X_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${SCALED_MM_C2X_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_SCALED_MM_C2X=1")
+    message(STATUS "Building scaled_mm_c2x for archs: ${SCALED_MM_2X_ARCHS}")
+else()
+if(SCALED_MM_3X_ARCHS)
+      message(STATUS "Not building scaled_mm_c2x as all archs are already built"
+                     " for and covered by scaled_mm_c3x")
+else()
+      message(STATUS "Not building scaled_mm_c2x as no compatible archs found "
+                    "in CUDA target architectures")
+endif()
+endif()
+
+  #
+  # CUTLASS MoE kernels (moved from _C to _C_stable_libtorch)
+  #
+
+  # The MoE kernel cutlass_moe_mm requires CUDA 12.3 or later (and ONLY works
+  # on Hopper). get_cutlass_(batched_)moe_mm_data should only be compiled
+  # if it's possible to compile MoE kernels that use its output.
+  cuda_archs_loose_intersection(SCALED_MM_ARCHS "9.0a" "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3 AND SCALED_MM_ARCHS)
+    set(CUTLASS_MOE_SM90_SRCS "csrc/quantization/w8a8/cutlass/moe/grouped_mm_c3x_sm90.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${CUTLASS_MOE_SM90_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${CUTLASS_MOE_SM90_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MOE_SM90=1")
+    message(STATUS "Building grouped_mm_c3x for archs: ${SCALED_MM_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3 AND SCALED_MM_ARCHS)
+      message(STATUS "Not building grouped_mm_c3x kernels as CUDA Compiler version is "
+                     "not >= 12.3, we recommend upgrading to CUDA 12.3 or later "
+                     "if you intend on running FP8 quantized MoE models on Hopper.")
+else()
+      message(STATUS "Not building grouped_mm_c3x as no compatible archs found "
+                     "in CUDA target architectures.")
+endif()
+endif()
+
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0f;10.7f;11.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0a;10.1a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+    set(CUTLASS_MOE_SM100_SRCS "csrc/quantization/w8a8/cutlass/moe/grouped_mm_c3x_sm100.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${CUTLASS_MOE_SM100_SRCS}"
+      CUDA_ARCHS "${SCALED_MM_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${CUTLASS_MOE_SM100_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MOE_SM100=1")
+    message(STATUS "Building grouped_mm_c3x for archs: ${SCALED_MM_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND SCALED_MM_ARCHS)
+      message(STATUS "Not building grouped_mm_c3x kernels as CUDA Compiler version is "
+                     "not >= 12.8, we recommend upgrading to CUDA 12.8 or later "
+                     "if you intend on running FP8 quantized MoE models on Blackwell.")
+else()
+      message(STATUS "Not building grouped_mm_c3x as no compatible archs found "
+                     "in CUDA target architectures.")
+endif()
+endif()
+
+  # moe_data.cu is used by all CUTLASS MoE kernels.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(CUTLASS_MOE_DATA_ARCHS "9.0a;10.0f;10.7f;11.0f;12.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(CUTLASS_MOE_DATA_ARCHS "9.0a;10.0a;10.1a;10.3a;12.0a;12.1a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3 AND CUTLASS_MOE_DATA_ARCHS)
+    set(CUTLASS_MOE_DATA_SRCS "csrc/quantization/w8a8/cutlass/moe/moe_data.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${CUTLASS_MOE_DATA_SRCS}"
+      CUDA_ARCHS "${CUTLASS_MOE_DATA_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${CUTLASS_MOE_DATA_SRCS}")
+    message(STATUS "Building moe_data for archs: ${CUTLASS_MOE_DATA_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.3 AND CUTLASS_MOE_DATA_ARCHS)
+      message(STATUS "Not building moe_data as CUDA Compiler version is "
+                     "not >= 12.3, we recommend upgrading to CUDA 12.3 or later "
+                     "if you intend on running FP8 quantized MoE models on Hopper or Blackwell.")
+else()
+      message(STATUS "Not building moe_data as no compatible archs found "
+                     "in CUDA target architectures.")
+endif()
+endif()
+
+  #
+  # FP4/NVFP4 kernels (moved from _C to _C_stable_libtorch)
+  #
+
+  # SM12x FP4 kernels. These share some generic NVFP4 quantization entry
+  # sources with the SM10x/11x block below; set_gencode_flags_for_srcs appends
+  # per-source flags, so shared files accumulate both SM12x and SM10x/11x
+  # gencodes when both families are requested.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(FP4_SM120_ARCHS "12.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(FP4_SM120_ARCHS "12.0a;12.1a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND FP4_SM120_ARCHS)
+    set(FP4_SM120_SRCS
+      "csrc/quantization/fp4/nvfp4_quant_kernels.cu"
+      "csrc/quantization/fp4/activation_nvfp4_quant_fusion_kernels.cu"
+      "csrc/quantization/fp4/nvfp4_experts_quant.cu"
+      "csrc/quantization/fp4/nvfp4_scaled_mm_sm120_kernels.cu"
+      "csrc/quantization/fp4/nvfp4_blockwise_moe_kernel.cu"
+      "csrc/nvfp4_kv_cache_kernels.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${FP4_SM120_SRCS}"
+      CUDA_ARCHS "${FP4_SM120_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FP4_SM120_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_NVFP4_SM120=1")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MOE_SM120=1")
+    message(STATUS "Building SM12x NVFP4 for archs: ${FP4_SM120_ARCHS}")
+else()
+    message(STATUS "Not building SM12x NVFP4 as no compatible archs were found.")
+endif()
+
+  # SM10x/11x FP4 kernels. MXFP4 experts quantization is currently compiled
+  # only in this block; SM12x has separate NVFP4 matmul/MoE kernels above.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(FP4_SM100_ARCHS "10.0f;10.7f;11.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(FP4_SM100_ARCHS "10.0a;10.1a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND FP4_SM100_ARCHS)
+    set(FP4_SM100_SRCS
+      "csrc/quantization/fp4/nvfp4_quant_kernels.cu"
+      "csrc/quantization/fp4/activation_nvfp4_quant_fusion_kernels.cu"
+      "csrc/quantization/fp4/nvfp4_experts_quant.cu"
+      "csrc/quantization/fp4/nvfp4_scaled_mm_kernels.cu"
+      "csrc/quantization/fp4/nvfp4_blockwise_moe_kernel.cu"
+      "csrc/quantization/fp4/mxfp4_experts_quant.cu"
+      "csrc/quantization/fp4/mxfp4_blockwise_moe_kernel.cu"
+      "csrc/nvfp4_kv_cache_kernels.cu"
+      "csrc/nvfp4_ds_mla_cache_kernels.cu")
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
+      message(STATUS
+        "Building mxfp4_experts_quant unsupported stubs because CUDA compiler version is not >= 12.9 (found ${CMAKE_CUDA_COMPILER_VERSION}).")
+endif()
+    set_gencode_flags_for_srcs(
+      SRCS "${FP4_SM100_SRCS}"
+      CUDA_ARCHS "${FP4_SM100_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FP4_SM100_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_NVFP4_SM100=1")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MOE_SM100=1")
+    message(STATUS "Building SM10x/11x NVFP4/MXFP4 for archs: ${FP4_SM100_ARCHS}")
+else()
+    message(STATUS "Not building SM10x/11x NVFP4/MXFP4 as no compatible archs were found.")
+endif()
+
+  #
+  # W4A8 kernels (moved from _C to _C_stable_libtorch)
+  #
+
+  # Only build W4A8 kernels if we are building for something compatible with sm90a
+  cuda_archs_loose_intersection(W4A8_ARCHS "9.0a" "${CUDA_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND W4A8_ARCHS)
+    set(W4A8_SRCS
+       "csrc/quantization/cutlass_w4a8/w4a8_mm_entry.cu"
+       "csrc/quantization/cutlass_w4a8/w4a8_grouped_mm_entry.cu"
+       "csrc/quantization/cutlass_w4a8/w4a8_utils.cu"
+       )
+
+    set_gencode_flags_for_srcs(
+      SRCS "${W4A8_SRCS}"
+      CUDA_ARCHS "${W4A8_ARCHS}")
+
+    list(APPEND VLLM_STABLE_EXT_SRC "${W4A8_SRCS}")
+
+    message(STATUS "Building W4A8 kernels for archs: ${W4A8_ARCHS}")
+else()
+if(NOT ${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0
+        AND W4A8_ARCHS)
+      message(STATUS "Not building W4A8 kernels as CUDA Compiler version is "
+                     "not >= 12.0, we recommend upgrading to CUDA 12.0 or "
+                     "later if you intend on running w4a16 quantized models on "
+                     "Hopper.")
+else()
+      message(STATUS "Not building W4A8 kernels as no compatible archs "
+                     "found in CUDA target architectures")
+endif()
+endif()
+
+  # CUTLASS MLA Archs and flags.
+  # Runtime dispatch is gated in
+  # vllm/v1/attention/backends/mla/cutlass_mla.py.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(MLA_ARCHS "10.0f;10.7f;11.0f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(MLA_ARCHS "10.0a;10.1a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND MLA_ARCHS)
+    set(CUTLASS_MLA_SRCS
+      "csrc/attention/mla/sm100_cutlass_mla_kernel.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${CUTLASS_MLA_SRCS}"
+      CUDA_ARCHS "${MLA_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${CUTLASS_MLA_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_CUTLASS_MLA=1")
+    # Add MLA-specific include directories only to MLA source files
+    set_source_files_properties(${CUTLASS_MLA_SRCS}
+      PROPERTIES INCLUDE_DIRECTORIES "${CUTLASS_DIR}/examples/77_blackwell_fmha;${CUTLASS_DIR}/examples/common")
+    message(STATUS "Building CUTLASS MLA for archs: ${MLA_ARCHS}")
+else()
+    message(STATUS "Not building CUTLASS MLA as no compatible archs were found.")
+    # clear MLA_ARCHS
+    set(MLA_ARCHS)
+endif()
+
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(FUSED_KDA_DECODE_ARCHS
+      "9.0a;10.0f;12.0f" "${CUDA_ARCHS}")
+    cuda_archs_loose_intersection(FUSED_GDN_DECODE_ARCHS
+      "8.0;8.6;8.9;9.0a;10.0f;11.0f;12.0f" "${CUDA_ARCHS}")
+else()
+    # The fused GDN decode kernel needs only cp.async and BF16 math. Only the
+    # family-specific targets (10.0f, 11.0f, 12.0f) need CUDA >= 13.0.
+    cuda_archs_loose_intersection(FUSED_GDN_DECODE_ARCHS
+      "8.0;8.6;8.9;9.0a" "${CUDA_ARCHS}")
+endif()
+if(FUSED_KDA_DECODE_ARCHS)
+    set(FUSED_KDA_DECODE_SRC
+      "csrc/kimi_k3/fused_kda_decode_kernel.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${FUSED_KDA_DECODE_SRC}"
+      CUDA_ARCHS "${FUSED_KDA_DECODE_ARCHS}")
+    set_property(SOURCE ${FUSED_KDA_DECODE_SRC} APPEND PROPERTY
+      COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FUSED_KDA_DECODE_SRC}")
+    message(STATUS
+      "Building fused KDA decode for archs: ${FUSED_KDA_DECODE_ARCHS}")
+endif()
+if(FUSED_GDN_DECODE_ARCHS)
+    set(FUSED_GDN_DECODE_SRC
+      "csrc/gdn/fused_gdn_decode_kernel.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${FUSED_GDN_DECODE_SRC}"
+      CUDA_ARCHS "${FUSED_GDN_DECODE_ARCHS}")
+    set_property(SOURCE ${FUSED_GDN_DECODE_SRC} APPEND PROPERTY
+      COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FUSED_GDN_DECODE_SRC}")
+    message(STATUS
+      "Building fused GDN decode for archs: ${FUSED_GDN_DECODE_ARCHS}")
+endif()
+
+  # Beam's kernels use NVLink multicast and thread-block clusters. Their norms
+  # must not contract into FMAs to keep the FP32 boundary exact.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(BEAM_KERNEL_ARCHS
+      "9.0a;10.0f;10.3f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(BEAM_KERNEL_ARCHS
+      "9.0a;10.0a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(BEAM_KERNEL_ARCHS)
+    set(BEAM_KERNEL_SRCS "csrc/beam/allreduce_norm.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${BEAM_KERNEL_SRCS}"
+      CUDA_ARCHS "${BEAM_KERNEL_ARCHS}")
+    set_property(SOURCE ${BEAM_KERNEL_SRCS} APPEND PROPERTY
+      COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${BEAM_KERNEL_SRCS}")
+    message(STATUS "Building Beam kernels for archs: ${BEAM_KERNEL_ARCHS}")
+endif()
+
+  # Inkling2's fused all-reduce uses NVLink multicast and thread-block
+  # clusters. The mixes and norms of its kernels must not contract into FMAs.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(INKLING2_KERNEL_ARCHS
+      "9.0a;10.0f;10.3f" "${CUDA_ARCHS}")
+else()
+    cuda_archs_loose_intersection(INKLING2_KERNEL_ARCHS
+      "9.0a;10.0a;10.3a" "${CUDA_ARCHS}")
+endif()
+if(INKLING2_KERNEL_ARCHS)
+    set(INKLING2_KERNEL_SRCS
+      "csrc/inkling2/allreduce_conv_mix.cu"
+      "csrc/inkling2/conv_mix.cu"
+      "csrc/inkling2/seq_parallel.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${INKLING2_KERNEL_SRCS}"
+      CUDA_ARCHS "${INKLING2_KERNEL_ARCHS}")
+    set_property(SOURCE ${INKLING2_KERNEL_SRCS} APPEND PROPERTY
+      COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${INKLING2_KERNEL_SRCS}")
+    message(STATUS
+      "Building Inkling2 kernels for archs: ${INKLING2_KERNEL_ARCHS}")
+endif()
+
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(KIMI_K3_ATTN_RES_ARCHS
+      "10.0f" "${CUDA_ARCHS}")
+endif()
+if(KIMI_K3_ATTN_RES_ARCHS)
+    set(KIMI_K3_ATTN_RES_SRC
+      "csrc/kimi_k3/attn_res_kernel.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${KIMI_K3_ATTN_RES_SRC}"
+      CUDA_ARCHS "${KIMI_K3_ATTN_RES_ARCHS}")
+    set_property(SOURCE ${KIMI_K3_ATTN_RES_SRC} APPEND PROPERTY
+      COMPILE_OPTIONS
+      "$<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--expt-extended-lambda;--use_fast_math>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${KIMI_K3_ATTN_RES_SRC}")
+    message(STATUS
+      "Building Kimi K3 AttnRes for archs: ${KIMI_K3_ATTN_RES_ARCHS}")
+endif()
+
+  # Qwen4Exp HyperConnection up projection + gate mix (tcgen05).
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(QWEN4_EXP_HC_UP_GATE_MIX_ARCHS
+      "10.0f" "${CUDA_ARCHS}")
+endif()
+if(QWEN4_EXP_HC_UP_GATE_MIX_ARCHS)
+    set(QWEN4_EXP_HC_UP_GATE_MIX_SRC "csrc/qwen4_exp/hc_up_gate_mix.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${QWEN4_EXP_HC_UP_GATE_MIX_SRC}"
+      CUDA_ARCHS "${QWEN4_EXP_HC_UP_GATE_MIX_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${QWEN4_EXP_HC_UP_GATE_MIX_SRC}")
+    message(STATUS "Building Qwen4Exp HC up+gate mix for archs: "
+      "${QWEN4_EXP_HC_UP_GATE_MIX_ARCHS}")
+endif()
+
+  # Hadacore kernels
+  cuda_archs_loose_intersection(HADACORE_ARCHS "8.0+PTX;9.0+PTX" "${CUDA_ARCHS}")
+if(HADACORE_ARCHS)
+    set(HADACORE_SRCS "csrc/quantization/hadamard/hadacore/hadamard_transform_cuda.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${HADACORE_SRCS}"
+      CUDA_ARCHS "${HADACORE_ARCHS}")
+    list(APPEND VLLM_STABLE_EXT_SRC "${HADACORE_SRCS}")
+    message(STATUS "Building hadacore")
+endif()
+
+  # Fused MQA logits + top-k prefill kernel (SM100 family). It compiles against
+  # DeepGEMM's headers, so DeepGEMM is fetched here.
+  include(cmake/external_projects/deepgemm.cmake)
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.9)
+    cuda_archs_loose_intersection(FUSED_MQA_TOPK_ARCHS "10.0f" "${CUDA_ARCHS}")
+endif()
+if(FUSED_MQA_TOPK_ARCHS)
+    set(FUSED_MQA_TOPK_SRC "csrc/attention/dsa/fused_mqa_topk/fused_mqa_topk.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${FUSED_MQA_TOPK_SRC}"
+      CUDA_ARCHS "${FUSED_MQA_TOPK_ARCHS}")
+    set_property(SOURCE ${FUSED_MQA_TOPK_SRC} APPEND PROPERTY INCLUDE_DIRECTORIES
+      "${deepgemm_SOURCE_DIR}/deep_gemm/include"
+      "${deepgemm_SOURCE_DIR}/third-party/cutlass/include")
+    list(APPEND VLLM_STABLE_EXT_SRC "${FUSED_MQA_TOPK_SRC}")
+    message(STATUS
+      "Building fused MQA top-k for archs: ${FUSED_MQA_TOPK_ARCHS}")
+endif()
+
+  # if CUDA endif
+
+  # HIP counterpart of the FUSED_KDA_DECODE block above: same `fused_kda_decode`
+  # op, same VLLM_ENABLE_FUSED_KDA_DECODE guard in torch_bindings.cpp 
+  # Built for the CDNA archs the kernel supports 
+  # (gfx942 / gfx950), so it is only emitted when one of those is in the arch 
+  # list. A multi-arch build that includes them still emits this source for 
+  # every arch in that list. The runtime gate in kda_decode.py keeps the kernel
+  # off unsupported devices. Fused prefill KDA kernels is Only measured on 
+  # gfx950, so it is only built when gfx950 is in the arch list.
+
+  message(STATUS "Enabling C_stable extension.")
+  list(REMOVE_DUPLICATES VLLM_STABLE_EXT_SRC)
+  define_extension_target(
+    _C_stable_libtorch
+    DESTINATION vllm
+    LANGUAGE ${VLLM_GPU_LANG}
+    SOURCES ${VLLM_STABLE_EXT_SRC}
+    COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+    ARCHITECTURES ${VLLM_GPU_ARCHES}
+    INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR} ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
+    USE_SABI 3
+    WITH_SOABI)
+
+  # Set TORCH_TARGET_VERSION for stable ABI compatibility.
+  # This ensures we only use C-shim APIs available in PyTorch 2.11.
+  # _C_stable_libtorch is abi compatible with PyTorch >= TORCH_TARGET_VERSION
+  # which is currently set to 2.11.
+  target_compile_definitions(_C_stable_libtorch PRIVATE
+    TORCH_TARGET_VERSION=0x020B000000000000ULL)
+
+  # Needed to use cuda/hip APIs from C-shim
+    target_compile_definitions(_C_stable_libtorch PRIVATE USE_CUDA)
+if(COOPERATIVE_TOPK_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_COOPERATIVE_TOPK=1)
+endif()
+if(FUSED_KDA_DECODE_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_FUSED_KDA_DECODE=1)
+endif()
+if(FUSED_MQA_TOPK_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_FUSED_MQA_TOPK=1)
+endif()
+if(FUSED_GDN_DECODE_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_FUSED_GDN_DECODE=1)
+endif()
+if(KIMI_K3_ATTN_RES_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_KIMI_K3_ATTN_RES=1)
+endif()
+if(QWEN4_EXP_HC_UP_GATE_MIX_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_QWEN4_EXP_HC_UP_GATE_MIX=1)
+endif()
+if(BEAM_KERNEL_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_BEAM_KERNELS=1)
+endif()
+if(INKLING2_KERNEL_ARCHS)
+      target_compile_definitions(_C_stable_libtorch PRIVATE
+        VLLM_ENABLE_INKLING2_KERNELS=1)
+endif()
+    # Needed by CUTLASS kernels
+    target_compile_definitions(_C_stable_libtorch PRIVATE
+      CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
+
+  # On ROCm, _C_stable_libtorch calls raw HIP APIs (e.g. hipGetDevice in
+  # get_device_prop()) which must resolve to the same libamdhip64.so that
+  # PyTorch uses.  When PyTorch bundles its own copy (pip/conda wheels),
+  # the raw HIP calls would otherwise resolve to the system ROCm copy,
+  # initializing a second HIP runtime that corrupts device state (wrong
+  # device on DeviceGuard, core dumps on multi-GPU tests).
+  #
+  # If PyTorch doesn't bundle libamdhip64 (built from source against system
+  # ROCm), there is only one copy in the process and no action is needed —
+  # the HIP compiler already links the system libamdhip64 automatically.
+
+#
+# _moe_C_stable_libtorch extension
+#
+
+#
+# The softplus-sqrt topk kernels are instantiated one translation unit per
+# (gating dtype, topk_indices dtype) pair, in topk_softplus_sqrt_<dtype>_<idx>.cu,
+# so that ninja generates the device code for each pair in parallel instead of
+# serializing it onto a single core.
+set(VLLM_TOPK_SOFTPLUS_SQRT_SRC
+  "csrc/moe/topk_softplus_sqrt_f32_int32.cu"
+  "csrc/moe/topk_softplus_sqrt_f32_uint32.cu"
+  "csrc/moe/topk_softplus_sqrt_f32_int64.cu"
+  "csrc/moe/topk_softplus_sqrt_f16_int32.cu"
+  "csrc/moe/topk_softplus_sqrt_f16_uint32.cu"
+  "csrc/moe/topk_softplus_sqrt_f16_int64.cu"
+  "csrc/moe/topk_softplus_sqrt_bf16_int32.cu"
+  "csrc/moe/topk_softplus_sqrt_bf16_uint32.cu"
+  "csrc/moe/topk_softplus_sqrt_bf16_int64.cu")
+
+set(VLLM_MOE_EXT_SRC
+  "csrc/moe/torch_bindings.cpp"
+  "csrc/moe/moe_align_sum_kernels.cu"
+  "csrc/moe/topk_softmax_kernels.cu"
+  "csrc/moe/topk_softplus_sqrt.cu"
+  ${VLLM_TOPK_SOFTPLUS_SQRT_SRC})
+
+  list(APPEND VLLM_MOE_EXT_SRC
+    "csrc/moe/moe_wna16.cu"
+    "csrc/moe/grouped_topk_kernels.cu"
+    "csrc/moe/fused_globalize_align_block_size.cu")
+
+  set(MOE_PERMUTE_SRC
+      "csrc/moe/permute_unpermute_kernels/moe_permute_unpermute_kernel.cu"
+      "csrc/moe/moe_permute_unpermute_op.cu")
+
+  list(APPEND VLLM_MOE_EXT_SRC "${MOE_PERMUTE_SRC}")
+
+set_gencode_flags_for_srcs(
+  SRCS "${VLLM_MOE_EXT_SRC}"
+  CUDA_ARCHS "${CUDA_ARCHS}")
+
+  set(MUSE_SPARK_ROUTING_ARCHS "${CUDA_ARCHS}")
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+    # Native FP32 warp-max reduction requires the Blackwell family target.
+    list(TRANSFORM MUSE_SPARK_ROUTING_ARCHS
+      REPLACE "^10[.]0([+]PTX)?$" "10.0f")
+endif()
+  set_gencode_flags_for_srcs(
+    SRCS "csrc/moe/muse_spark_routing.cu"
+    CUDA_ARCHS "${MUSE_SPARK_ROUTING_ARCHS}")
+  list(APPEND VLLM_MOE_EXT_SRC "csrc/moe/muse_spark_routing.cu")
+
+  set(VLLM_MOE_WNA16_SRC
+    "csrc/moe/moe_wna16.cu")
+
+  set_gencode_flags_for_srcs(
+    SRCS "${VLLM_MOE_WNA16_SRC}"
+    CUDA_ARCHS "${CUDA_ARCHS}")
+
+  list(APPEND VLLM_MOE_EXT_SRC "${VLLM_MOE_WNA16_SRC}")
+
+  # Rubin LUT-B MoE GEMM; tcgen05 decompress::lut::b needs CUDA 13.4.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.4)
+    cuda_archs_loose_intersection(LUT_B_MOE_ARCHS "10.7f" "${CUDA_ARCHS}")
+endif()
+if(LUT_B_MOE_ARCHS)
+    set(LUT_B_MOE_SRC "csrc/moe/lut_b_moe_sm107.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${LUT_B_MOE_SRC}"
+      CUDA_ARCHS "${LUT_B_MOE_ARCHS}")
+    list(APPEND VLLM_MOE_EXT_SRC "${LUT_B_MOE_SRC}")
+    message(STATUS "Building LUT-B MoE for archs: ${LUT_B_MOE_ARCHS}")
+endif()
+  # moe marlin arches
+  cuda_archs_loose_intersection(MARLIN_MOE_ARCHS "8.0+PTX" "${CUDA_ARCHS}")
+  # moe marlin has limited support for turing
+  cuda_archs_loose_intersection(MARLIN_MOE_SM75_ARCHS "7.5" "${CUDA_ARCHS}")
+  # moe marlin arches for other files
+  cuda_archs_loose_intersection(MARLIN_MOE_OTHER_ARCHS "7.5;8.0+PTX" "${CUDA_ARCHS}")
+if(MARLIN_MOE_OTHER_ARCHS)
+
+    #
+    # For the Marlin MOE kernels we automatically generate sources for various
+    # preselected input type pairs and schedules.
+    # Generate sources:
+    set(MOE_MARLIN_GEN_SCRIPT
+      ${CMAKE_CURRENT_SOURCE_DIR}/csrc/quantization/marlin/generate_kernels.py)
+    file(MD5 ${MOE_MARLIN_GEN_SCRIPT} MOE_MARLIN_GEN_SCRIPT_HASH)
+    list(JOIN CUDA_ARCHS "," CUDA_ARCHS_STR)
+    set(MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH "${MOE_MARLIN_GEN_SCRIPT_HASH}(ARCH:${CUDA_ARCHS_STR})")
+
+    message(STATUS "Marlin MOE generation script hash with arch: ${MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH}")
+    message(STATUS "Last run Marlin MOE generate script hash with arch: $CACHE{MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH}")
+
+if(NOT DEFINED CACHE{MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH}
+        OR NOT $CACHE{MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH} STREQUAL ${MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH})
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env
+        PYTHONPATH=$ENV{PYTHONPATH}
+          ${Python_EXECUTABLE} ${MOE_MARLIN_GEN_SCRIPT} ${CUDA_ARCHS_STR}
+          ${CMAKE_CURRENT_SOURCE_DIR}/csrc/moe/marlin_moe_wna16
+        RESULT_VARIABLE moe_marlin_generation_result
+        OUTPUT_VARIABLE moe_marlin_generation_output
+        OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/moe_marlin_generation.log
+        ERROR_FILE ${CMAKE_CURRENT_BINARY_DIR}/moe_marlin_generation.log
+      )
+
+if(NOT moe_marlin_generation_result EQUAL 0)
+        message(FATAL_ERROR "Marlin MOE generation failed."
+                            " Result: \"${moe_marlin_generation_result}\""
+                            "\nCheck the log for details: "
+                            "${CMAKE_CURRENT_BINARY_DIR}/moe_marlin_generation.log")
+else()
+        set(MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH ${MOE_MARLIN_GEN_SCRIPT_HASH_AND_ARCH}
+            CACHE STRING "Last run Marlin MOE generate script hash" FORCE)
+        message(STATUS "Marlin MOE generation completed successfully.")
+endif()
+else()
+      message(STATUS "Marlin MOE generation script has not changed, skipping generation.")
+endif()
+
+if(MARLIN_MOE_ARCHS)
+      file(GLOB MARLIN_MOE_SRC "csrc/moe/marlin_moe_wna16/sm80_kernel_*.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "${MARLIN_MOE_SRC}"
+        CUDA_ARCHS "${MARLIN_MOE_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+        set_source_files_properties(${MARLIN_MOE_SRC}
+          PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+      list(APPEND VLLM_MOE_EXT_SRC ${MARLIN_MOE_SRC})
+endif()
+
+if(MARLIN_MOE_SM75_ARCHS)
+      file(GLOB MARLIN_MOE_SM75_SRC "csrc/moe/marlin_moe_wna16/sm75_kernel_*.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "${MARLIN_MOE_SM75_SRC}"
+        CUDA_ARCHS "${MARLIN_MOE_SM75_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+        set_source_files_properties(${MARLIN_MOE_SM75_SRC}
+          PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+      list(APPEND VLLM_MOE_EXT_SRC ${MARLIN_MOE_SM75_SRC})
+endif()
+
+    set(MARLIN_MOE_OTHER_SRC "csrc/moe/marlin_moe_wna16/ops.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${MARLIN_MOE_OTHER_SRC}"
+      CUDA_ARCHS "${MARLIN_MOE_OTHER_ARCHS}")
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+      set_source_files_properties(${MARLIN_MOE_OTHER_SRC}
+        PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+endif()
+    list(APPEND VLLM_MOE_EXT_SRC "${MARLIN_MOE_OTHER_SRC}")
+
+    message(STATUS "Building Marlin MOE kernels for archs: ${MARLIN_MOE_OTHER_ARCHS}")
+else()
+    message(STATUS "Not building Marlin MOE kernels as no compatible archs found"
+                   " in CUDA target architectures")
+endif()
+
+message(STATUS "Enabling MoE C_stable extension.")
+define_extension_target(
+  _moe_C_stable_libtorch
+  DESTINATION vllm
+  LANGUAGE ${VLLM_GPU_LANG}
+  SOURCES ${VLLM_MOE_EXT_SRC}
+  COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+  ARCHITECTURES ${VLLM_GPU_ARCHES}
+  INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR}
+  INCLUDE_DIRECTORIES ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
+  USE_SABI 3
+  WITH_SOABI)
+
+# Set TORCH_TARGET_VERSION for stable ABI compatibility.
+# This ensures we only use C-shim APIs available in PyTorch 2.11.
+# _moe_C_stable_libtorch is abi compatible with PyTorch >= TORCH_TARGET_VERSION
+# which is currently set to 2.11.
+target_compile_definitions(_moe_C_stable_libtorch PRIVATE
+  TORCH_TARGET_VERSION=0x020B000000000000ULL)
+
+# Needed to use cuda/hip APIs from C-shim
+  target_compile_definitions(_moe_C_stable_libtorch PRIVATE USE_CUDA)
+if(LUT_B_MOE_ARCHS)
+    target_compile_definitions(_moe_C_stable_libtorch PRIVATE
+      VLLM_ENABLE_LUT_B_MOE=1)
+endif()
+  # Needed by CUTLASS kernels
+  target_compile_definitions(_moe_C_stable_libtorch PRIVATE
+    CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
+
+# On ROCm, _moe_C_stable_libtorch calls raw HIP APIs (e.g. hipGetDevice in
+# get_device_prop()) which must resolve to the same libamdhip64.so that
+# PyTorch uses.  When PyTorch bundles its own copy (pip/conda wheels),
+# the raw HIP calls would otherwise resolve to the system ROCm copy,
+# initializing a second HIP runtime that corrupts device state (wrong
+# device on DeviceGuard, core dumps on multi-GPU tests).
+#
+# If PyTorch doesn't bundle libamdhip64 (built from source against system
+# ROCm), there is only one copy in the process and no action is needed —
+# the HIP compiler already links the system libamdhip64 automatically.
+
+
+# Must run after the last HIP `define_extension_target` so every extension
+# has registered its sources.
+
+# For CUDA and HIP builds also build the triton_kernels external package.
+    include(cmake/external_projects/triton_kernels.cmake)
+
+# DeepGEMM and DeepSelect host code uses C++20 <format>, which libstdc++
+# provides only from GCC 13 onward.
+if(VLLM_GPU_LANG STREQUAL "CUDA"
+    AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13")
+  message(FATAL_ERROR
+    "GCC >= 13 is required to build vLLM with CUDA (found ${CMAKE_CXX_COMPILER_VERSION}). "
+    "The DeepGEMM and DeepSelect dependencies use C++20 <format> in host code, "
+    "which libstdc++ does not provide before GCC 13. "
+    "See: https://github.com/vllm-project/vllm/issues/58158")
+endif()
+
+# For CUDA we also build and ship some external projects.
+    include(cmake/external_projects/deepselect.cmake)
+    include(cmake/external_projects/fmha_sm100.cmake)
+    include(cmake/external_projects/flashmla.cmake)
+    include(cmake/external_projects/flashkda.cmake)
+    include(cmake/external_projects/tml_fa4.cmake)
+
+    # vllm-flash-attn should be last as it overwrites some CMake functions
+    include(cmake/external_projects/vllm_flash_attn.cmake)

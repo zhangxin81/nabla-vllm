@@ -1,0 +1,29 @@
+name: 📚 Documentation
+description: Report an issue with Nabla target-model documentation
+title: "[Doc]: "
+labels: ["documentation"]
+
+body:
+- type: textarea
+  attributes:
+    label: 📚 The doc issue
+    description: >
+      A clear and concise description of which page in this repository is incorrect, including the source revision.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Suggest a potential alternative/fix
+    description: >
+      Tell us how we could improve the documentation in this regard.
+- type: markdown
+  attributes:
+    value: >
+      Thanks for contributing 🎉!
+- type: checkboxes
+  id: askllm
+  attributes:
+    label: Before submitting a new issue...
+    options:
+      - label: Make sure you searched this repository for related issues and checked the [target-model scope and benchmark configuration](https://github.com/zhangxin81/nabla-vllm/blob/main/README.md).
+        required: true

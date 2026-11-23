@@ -1,0 +1,68 @@
+nav:
+  - Home: README.md
+  - User Guide:
+    - usage/README.md
+    - Getting Started:
+      - getting_started/quickstart.md
+      - getting_started/installation
+      - Examples: examples
+    - General:
+      - usage/v1_guide.md
+      - usage/*
+    - Inference and Serving:
+      - serving/offline_inference.md
+      - Online Serving: serving/online_serving
+      - serving/*
+      - serving/integrations
+    - Deployment:
+      - deployment/*
+      - deployment/frameworks
+      - deployment/integrations
+    - Training: training
+    - Configuration:
+      - configuration/*
+
+    - Models:
+      - models/supported_models.md
+      - models/generative_models.md
+      - Upstream Pooling Reference: models/pooling_models
+      - models/structured_decisions_models.md
+      - models/extensions
+      - Upstream Hardware Reference:
+        - models/hardware_supported_models/*
+
+    - Features: features
+  - Developer Guide:
+    - contributing/README.md
+    - General:
+      - glob: contributing/*
+        flatten_single_child_sections: true
+    - Model Implementation:
+      - contributing/model/README.md
+      - contributing/model/basic.md
+      - contributing/model/registration.md
+      - contributing/model/tests.md
+      - contributing/model/multimodal.md
+      - contributing/model/transcription.md
+    - CI: contributing/ci
+    - Design Documents:
+      - Plugins:
+        - design/*plugin*.md
+      - design/*
+  - Benchmarking:
+      - benchmarking/README.md
+      - benchmarking/cli.md
+      - benchmarking/sweeps.md
+      - benchmarking/dashboard.md
+      - Nabla H20 input and host planning: benchmarks/nabla-vllm/h20-input-host-planning-20261123.md
+  - API Reference:
+    - api/README.md
+    - api/vllm
+  - CLI Reference:
+    - cli/README.md
+    - vllm: cli
+  - Upstream Community Reference:
+    - community/*
+    - Governance: governance
+    - Nabla Issues: https://github.com/zhangxin81/nabla-vllm/issues
+    - Upstream vLLM: https://github.com/vllm-project/vllm
