@@ -1,8 +1,14 @@
-# Custom self-hosted runner labels (e.g. the autoscaling vllm-runners pool) so
-# actionlint doesn't flag them as unknown in `runs-on`.
+# Custom self-hosted runner labels retained by upstream workflows.
 self-hosted-runner:
   labels:
     - vllm-runners
-    # Not yet in actionlint's known-label set.
     - macos-26
     - ubuntu-slim
+
+# Generated gh-aw syntax newer than actionlint v1.7.12 is checked by gh-aw.
+paths:
+  .github/workflows/agent-*.lock.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'
+      - '^unexpected key "cache-mode" for "job" section\.'
+      - '^property "workflow_(ref|sha)" is not defined in object type '

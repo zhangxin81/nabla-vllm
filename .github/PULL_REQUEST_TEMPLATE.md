@@ -2,7 +2,8 @@
 
 ## Overview
 
-<!-- Summarize the change in 1-2 lines. Link relevant issues and PRs. -->
+<!-- Summarize the change in 1-2 lines. Link the Nabla issue and related PRs.
+Explain the duplicate-work search and identify the human maintainer. -->
 
 ## Claims
 
@@ -10,7 +11,11 @@
 
 ## Validation
 
-<!-- Show evidence that the claims are met by this change, and steps to reproduce validations. For added tests, paste the exact pytest summary (including the time of newly added tests and modified tests) and the commit SHA the tests were run on. -->
+<!-- Include source SHA, exact commands, results and missing coverage.
+For runtime changes include model/checkpoint identity, GPU/Torch/CUDA,
+correctness or model evaluation, and full serving commands when applicable.
+For performance claims include baseline SHA, matched workloads, repetitions,
+variability, latency and regressions. Separate kernel, forward and serving results. -->
 
 ## Details
 
@@ -23,6 +28,7 @@
 
 - [ ] I used vLLM's `/pr-checklist` skill. (Mandatory for agents, optional for humans).
 - [ ] AI assistance was used during the creation of this PR.
+- [ ] A human maintainer owns this contribution and will review it before merging.
 
 - [ ] **Design Fit:** Minimizes impact on core components, reuses existing functionality, and justifies added complexity.
 - [ ] **Testing and Validation:** Validates the change and ensures any added tests are meaningful and reliable, with CI coverage or documented CI resource constraints and validation performed outside CI.
@@ -30,4 +36,4 @@
 - [ ] **Pull Request Contents:** Includes a brief summary and relevant links, supports claims with evidence, explains root causes and implementation trade-offs, and follows the contributing guide.
 </details>
 
-**BEFORE SUBMITTING, PLEASE READ <https://docs.vllm.ai/en/latest/contributing>** (anything written below this line will be removed by GitHub Actions)
+**Before submitting, read [Nabla's contributing guide](https://github.com/zhangxin81/nabla-vllm/blob/main/docs/contributing/README.md).**

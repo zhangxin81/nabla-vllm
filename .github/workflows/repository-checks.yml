@@ -1,0 +1,56 @@
+name: Nabla repository checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.14"
+      - name: Install check dependencies
+        run: |
+          uv venv --python 3.14
+          uv pip install --python .venv/bin/python PyYAML regex
+      - name: Check shared agent guidance
+        run: .venv/bin/python tools/pre_commit/check_agent_files.py
+      - name: Check immutable action references
+        run: |
+          git ls-files -z '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+            | xargs -0 .venv/bin/python tools/pre_commit/check_github_actions_pins.py
+      - name: Run existing CI command tests
+        run: .venv/bin/python .github/workflows/scripts/test_run_ci_command.py
+
+  agent-workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned agent workflow compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v1.2.2
+      - name: Verify workflow sources and generated files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh aw compile --no-check-update --strict --schedule-seed zhangxin81/nabla-vllm
+          git diff --exit-code -- .github/workflows .github/aw/actions-lock.json .gitattributes

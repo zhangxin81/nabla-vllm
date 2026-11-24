@@ -1,0 +1,33 @@
+name: Agent development task
+description: A bounded implementation or investigation with explicit acceptance criteria.
+title: "[Task]: "
+labels: ["agent-task"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: Describe observable behavior, the current problem and relevant issues or PRs.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: Include target model/hardware, affected area, exclusions and the human maintainer.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and validation
+      description: Give reproduction commands, expected results and required correctness or performance evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: resources
+    attributes:
+      label: Available resources
+      description: Public logs, artifacts and authorized runner access. Do not include credentials or private endpoints.
+    validations:
+      required: false

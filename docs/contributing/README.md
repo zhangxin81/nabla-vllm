@@ -12,6 +12,9 @@ review and documentation requirements below remain applicable; upstream
 reviewer rosters, governance and CI services describe upstream vLLM. A retained
 workflow file does not establish a working Nabla GPU CI service.
 
+For GitHub agent tasks, shared skills, lightweight CI and maintenance workflows,
+see [Developing with agents](agents.md).
+
 ## License
 
 See [LICENSE](../../LICENSE).

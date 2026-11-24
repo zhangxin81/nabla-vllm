@@ -1,7 +1,10 @@
-# Agent Instructions for vLLM
+# Agent Instructions for nabla-vllm
 
-> These instructions apply to **all** AI-assisted contributions to `vllm-project/vllm`.
-> Breaching these guidelines can result in automatic banning.
+These instructions apply to `zhangxin81/nabla-vllm`. The runtime targets
+Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA CUDA, including P/D
+disaggregation. Python imports remain `vllm`; the primary CLI is `nabla-vllm`.
+Start with the [agent development guide](docs/contributing/agents.md).
+For contributions to upstream vLLM, read that repository's current instructions.
 
 ## 1. Contribution Policy (Mandatory)
 
@@ -10,9 +13,9 @@
 Before proposing a PR, run these checks:
 
 ```bash
-gh issue view <issue_number> --repo vllm-project/vllm --comments
-gh pr list --repo vllm-project/vllm --state open --search "<issue_number> in:body"
-gh pr list --repo vllm-project/vllm --state open --search "<short area keywords>"
+gh issue view <issue_number> --repo zhangxin81/nabla-vllm --comments
+gh pr list --repo zhangxin81/nabla-vllm --state open --search "<issue_number> in:body"
+gh pr list --repo zhangxin81/nabla-vllm --state open --search "<short area keywords>"
 ```
 
 - If an open PR already addresses the same fix, do not open another.
@@ -24,8 +27,11 @@ Do not open one-off PRs for tiny edits (single typo, isolated style change, one 
 
 ### Accountability
 
-- Pure code-agent PRs are **not allowed**. A human submitter must understand and defend the change end-to-end.
-- The submitting human must review every changed line and run relevant tests.
+- Agents may prepare changes and draft PRs for an authorized task. A named human
+  maintainer owns the contribution and the merge decision.
+- Before merging, the human maintainer reviews every changed line and confirms
+  the relevant test results. Agents do not approve their own changes or bypass
+  branch rules.
 - PR descriptions for AI-assisted work **must** include:
     - Why this is not duplicating an existing PR.
     - Test commands run and results (for unit tests, reproducible pytest command and exact pytest summary line including time).
@@ -64,11 +70,12 @@ pre-commit install
 ### Installing dependencies
 
 ```bash
-# Start with precompiled artifacts for an editable install:
-VLLM_USE_PRECOMPILED=1 uv pip install -e . --torch-backend=auto
+# Use a verified native wheel matching this source and Torch/CUDA:
+VLLM_PRECOMPILED_WHEEL_LOCATION=/artifacts/matching-native.whl uv pip install -e .
 ```
 
-For C/C++ or CUDA changes, follow the
+For docs, CI and agent configuration, the lightweight setup in the agent
+development guide needs no runtime wheel or model weights. For C/C++ or CUDA changes, follow the
 [incremental compilation workflow](docs/contributing/incremental_build.md) to
 configure and perform incremental builds.
 

@@ -229,6 +229,13 @@ IPC 为 0.9639；这组缓存开启后的回退与关闭缓存的主矩阵分开
 吞吐饱和点需要与延迟一起阅读，低样本量的 p95／p99 不作为 SLA 估计。
 源代码版本不同、后端配置变化和未通过的检查都在记录中明确说明。
 
+## 面向 agent 的开发
+
+我们用 GitHub Issues 描述可复现的任务，用 Discussions 讨论设计，用 PR 保留修改和验证证据。
+共享的 `AGENTS.md`、Skills 和专用 agent 配置帮助不同 agent 接手工作；轻量 CI 检查实际执行，
+CUDA、模型输出和性能仍按各自要求验证。入口、环境准备和持续维护工作流见
+[agent 开发指南](docs/contributing/agents.md)。
+
 ## 开发与运行
 
 项目包名和主要 CLI 为 `nabla-vllm`，Python 导入路径为 `vllm`，保留 `vllm` CLI 别名。
