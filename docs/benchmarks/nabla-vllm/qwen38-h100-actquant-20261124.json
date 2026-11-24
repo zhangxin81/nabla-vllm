@@ -9416,5 +9416,22 @@
       "p99_e2el_ms": 3399.477414018474
     }
   ],
-  "privacy": "Text outputs, absolute timestamps, source paths and private identifiers omitted; numerical measurements unchanged."
+  "privacy": "Text outputs, absolute timestamps, source paths and private identifiers omitted; numerical measurements unchanged.",
+  "public_benchmark_cli_verification": {
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "torch": "2.14.0+cu130",
+    "runtime_sha256": "9bc3cf7109c6791e9ccfdc893747543e91caee311387514623719be2050261ca",
+    "boundary": "GPU kernels only; no compilation, input copies or diagnostics",
+    "records": [
+      {
+        "rows": 10,
+        "width": 640,
+        "exact": true,
+        "baseline_hot_us": 3.9391998201608653,
+        "fused_hot_us": 1.7503999173641205,
+        "baseline_cold_us": 4.383999854326248,
+        "fused_cold_us": 1.945599913597107
+      }
+    ]
+  }
 }
