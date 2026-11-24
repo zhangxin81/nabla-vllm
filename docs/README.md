@@ -35,6 +35,11 @@ P/D 分离和目标算子优化，按固定源码、硬件、精度和请求形�
 使用不同源码与负载，分别保留原始结果和输出差异。
 组件、消融和完整服务收益不能相加，也不能把未建立精度等价的观测写成普遍优势。
 
+[Qwen3.8 H100 算子现状](benchmarks/nabla-vllm/qwen38-h100-operator-profile-20261124.md)
+记录 Prefill 与 Decode 的热点；
+[后续优化验收](benchmarks/nabla-vllm/qwen38-h100-profile-optimizations-20261124.md)
+记录回退统一分桶后主干上的 MoE 融合、54 点 P/D 对照及真实输入数值检查。
+
 ## 来源和贡献
 
 上游来源是 [vLLM](https://github.com/vllm-project/vllm)，沿用 Apache-2.0 许可和

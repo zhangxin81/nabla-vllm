@@ -108,6 +108,123 @@ TOP_KS = [1, 2, 6]
 SEEDS = [0]
 
 
+@pytest.mark.parametrize("rows", [0, 1, 7, 64, 65, 80, 640, 641, 1280, 40960])
+@torch.inference_mode()
+def test_unsorted_silu_ue8m0_preserves_native_bytes_on_graph_replay(rows):
+    """Fusion preserves native rounding, offset input rows and live graph inputs."""
+    torch.manual_seed(49)
+    h = 640
+    storage = torch.empty((rows, 2 * h + 4), device="cuda", dtype=torch.bfloat16)
+    x = storage[:, 2 : 2 * h + 2]
+    values = [torch.randn_like(x) * 3, torch.zeros_like(x)]
+    negative_zero_up = torch.ones_like(x)
+    negative_zero_up[:, h:] = -0.0
+    values.append(negative_zero_up)
+
+    def reference():
+        activation = torch.empty((rows, h), device="cuda", dtype=torch.bfloat16)
+        if rows:
+            torch.ops._C.silu_and_mul(
+                activation, x.clone(memory_format=torch.contiguous_format)
+            )
+        return per_token_group_quant_fp8(activation, 128, use_ue8m0=True)
+
+    x.copy_(values[0])
+    triton_moe._silu_mul_quant_ue8m0(x)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual_q, actual_scale = triton_moe._silu_mul_quant_ue8m0(x)
+    for value in values:
+        x.copy_(value)
+        expected_q, expected_scale = reference()
+        graph.replay()
+        torch.accelerator.synchronize()
+        assert torch.equal(actual_q.view(torch.uint8), expected_q.view(torch.uint8))
+        assert torch.equal(actual_scale, expected_scale)
+
+
+@torch.inference_mode()
+def test_unsorted_silu_ue8m0_preserves_all_bf16_gate_bits():
+    """Exhaustive gate values include NaN, infinities, subnormals and signed zero."""
+    gates = (
+        torch.arange(65536, device="cuda", dtype=torch.int32)
+        .to(torch.int16)
+        .view(torch.bfloat16)
+        .view(512, 128)
+    )
+    for up in (0.0, 1.0, -1.0, torch.finfo(torch.bfloat16).max, 2.0**-133):
+        x = torch.cat((gates, torch.full_like(gates, up)), dim=1)
+        activation = torch.empty_like(gates)
+        torch.ops._C.silu_and_mul(activation, x)
+        expected_q, expected_scale = per_token_group_quant_fp8(
+            activation, 128, use_ue8m0=True
+        )
+        actual_q, actual_scale = triton_moe._silu_mul_quant_ue8m0(x)
+        assert torch.equal(actual_q.view(torch.uint8), expected_q.view(torch.uint8))
+        assert torch.equal(actual_scale, expected_scale)
+
+
+@pytest.mark.parametrize("rows", [1, 8])
+@pytest.mark.parametrize("ep_size", [1, 4])
+@torch.inference_mode()
+def test_unsorted_silu_ue8m0_full_experts_match_unfused_with_ep(
+    rows, ep_size, workspace_init
+):
+    """A no-op infinite clamp selects the unfused reference with identical routing."""
+    torch.manual_seed(49)
+    e, n, k, topk = 16, 640, 2560, 10
+    a = torch.randn((rows, k), device="cuda", dtype=torch.bfloat16) / 10
+    score = torch.randn((rows, e), device="cuda", dtype=torch.float32)
+    topk_weights, topk_ids, _ = fused_topk(a, score, topk, False)
+    w1, w2, quant_config = make_test_quant_config(
+        e,
+        n,
+        k,
+        a.dtype,
+        quant_dtype=current_platform.fp8_dtype(),
+        block_shape=[128, 128],
+    )
+    assert quant_config.w1_scale is not None
+    assert quant_config.w2_scale is not None
+    w1_scale, w2_scale = quant_config.w1_scale, quant_config.w2_scale
+    expert_map = None
+    if ep_size > 1:
+        local_experts = topk_ids[0, : e // ep_size].clone()
+        expert_map = torch.full((e,), -1, device="cuda", dtype=torch.int32)
+        expert_map[local_experts] = torch.arange(
+            e // ep_size, device="cuda", dtype=torch.int32
+        )
+        w1, w2 = w1[local_experts].contiguous(), w2[local_experts].contiguous()
+        w1_scale = w1_scale[local_experts].contiguous()
+        w2_scale = w2_scale[local_experts].contiguous()
+
+    results = []
+    with set_current_vllm_config(vllm_config):
+        for clamp in (None, float("inf")):
+            config = fp8_w8a8_moe_quant_config(
+                w1_scale=w1_scale,
+                w2_scale=w2_scale,
+                block_shape=[128, 128],
+                gemm1_clamp_limit=clamp,
+            )
+            operator = modular_triton_fused_moe(make_dummy_moe_config(), config)
+            result = operator.apply(
+                a.clone(),
+                w1,
+                w2,
+                topk_weights,
+                topk_ids,
+                activation=MoEActivation.SILU,
+                apply_router_weight_on_input=False,
+                expert_map=expert_map,
+                global_num_experts=e,
+            )
+            assert isinstance(result, torch.Tensor)
+            results.append(result.clone())
+    assert torch.isfinite(results[0]).all()
+    torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
+
+
 def torch_w8a8_block_fp8_moe(
     a,
     w1,

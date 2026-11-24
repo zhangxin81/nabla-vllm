@@ -21,6 +21,14 @@ v0.1 的 [Qwen3.8 H100 算子现状](docs/benchmarks/nabla-vllm/qwen38-h100-oper
 Prefill、纯 Decode 和 D 接续。六组负载的算子占比、真实 batch、Graph 节点和
 HC／通信重叠量均由 Nsight trace 复算；profiler 耗时与下方服务吞吐基线分开使用。
 
+后续 [H100 优化验收](docs/benchmarks/nabla-vllm/qwen38-h100-profile-optimizations-20261124.md)
+以回退统一分桶后的 `fffdea13c8` 为基线，保留 640 维 MoE 的 BF16 激活与
+UE8M0 FP8 量化融合。8×H100、4P4D、TP4／EP4、NixlConnector CUDA IPC 的
+54 点对照中，18 个配对吞吐比中位数为 **1.0198**，TTFT 比为 **0.9693**，
+TPOT 比为 **0.9855**。六组负载的吞吐中位变化为 +0.88%～+3.30%，仍有单轮
+退化和基线漂移；完整结果及数值边界见验收记录。这是相对此次 nabla 基线的增量，
+不能与下方历史上游对照的收益相加。
+
 ## 为什么维护 nabla-vllm
 
 性能优势是这个代码库的主要目标。我们聚焦两个目标模型、NVIDIA CUDA 和

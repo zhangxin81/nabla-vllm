@@ -104,6 +104,62 @@ def _silu_mul_quant_sorted_kernel(
     tl.store(scale_ptr + rows * (intermediate // GROUP_K) + tl.program_id(1), scale)
 
 
+@triton.jit(do_not_specialize=["rows"])
+def _silu_mul_quant_ue8m0_kernel(
+    x, q, scales, rows, h: tl.constexpr, stride_x: tl.constexpr, BLOCK_M: tl.constexpr
+):
+    r = (tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
+    g = tl.program_id(1)
+    k = g * 128 + tl.arange(0, 128)
+    gate = tl.load(
+        x + r[:, None] * stride_x + k[None, :], mask=r[:, None] < rows, other=0
+    ).to(tl.float32)
+    up = tl.load(
+        x + r[:, None] * stride_x + h + k[None, :], mask=r[:, None] < rows, other=0
+    ).to(tl.float32)
+    # CUDA packed_compute adds beta=+0 to the up half, normalizing -0.
+    up = tl.where(up == 0.0, 0.0, up)
+    silu = tl.div_rn(gate, 1.0 + tl.extra.cuda.libdevice.exp(-gate))
+    silu = silu.to(tl.bfloat16).to(tl.float32)
+    value = (silu * up).to(tl.bfloat16).to(tl.float32)
+    # CUDA fmax ignores NaN activation elements during its absmax reduction.
+    magnitude = tl.where(value == value, tl.abs(value), 0.0)
+    raw = tl.div_rn(tl.maximum(tl.max(magnitude, 1), 1e-10), 448.0)
+    raw = tl.maximum(tl.abs(raw), 1e-10)
+    bits = raw.to(tl.uint32, bitcast=True)
+    exponent = (bits >> 23) & 255
+    mantissa = bits & 0x7FFFFF
+    scale = ((exponent + (mantissa != 0).to(tl.uint32)) << 23).to(
+        tl.float32, bitcast=True
+    )
+    scaled = value * tl.div_rn(1.0, scale[:, None])
+    scaled = tl.where(
+        scaled == scaled, tl.minimum(tl.maximum(scaled, -448.0), 448.0), -448.0
+    )
+    tl.store(
+        q + r[:, None] * h + k[None, :],
+        scaled.to(tl.float8e4nv),
+        mask=r[:, None] < rows,
+    )
+    tl.store(scales + r * (h // 128) + g, scale, mask=r < rows)
+
+
+def _silu_mul_quant_ue8m0(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Preserve native BF16 activation and UE8M0 rounding for unsorted rows."""
+    assert x.ndim == 2 and x.dtype == torch.bfloat16 and x.stride(1) == 1
+    rows, h = x.shape[0], x.shape[1] // 2
+    assert h * 2 == x.shape[1] and h % 128 == 0
+    q = torch.empty((rows, h), device=x.device, dtype=torch.float8_e4m3fn)
+    scales = torch.empty((rows, h // 128), device=x.device, dtype=torch.float32)
+    if rows:
+        block_m = 1 if rows <= 64 else 4
+        num_warps = 4 if rows <= 640 else 1
+        _silu_mul_quant_ue8m0_kernel[(triton.cdiv(rows, block_m), h // 128)](
+            x, q, scales, rows, h, x.stride(0), block_m, num_warps=num_warps
+        )
+    return q, scales
+
+
 class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
     """Triton-based fused MoE expert implementation."""
 
@@ -153,6 +209,9 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
         # higher-precision + activation QDQ.
         self.quantization_emulation = False
         self._enable_sorted_a_tma = True
+        self._h100_ue8m0_activation = (
+            current_platform.is_cuda() and "H100" in current_platform.get_device_name()
+        )
         self.activation_key = activation_key
         super().__init__(moe_config, quant_config)
 
@@ -651,6 +710,24 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
                 cache2_dim,
                 BLOCK_M=16,
                 GROUP_K=128,
+            )
+        elif (
+            self._h100_ue8m0_activation
+            and activation == MoEActivation.SILU
+            and self.activation_config.clamp_limit is None
+            and self.quant_config.use_fp8_w8a8
+            and self.block_shape == [128, 128]
+            and cache2_dim == 640
+            and self.quant_dtype == torch.float8_e4m3fn
+            and intermediate_cache1.dtype == torch.bfloat16
+            and a2_scale is None
+            and lora_context is None
+            and not hooked
+            and not self.quantization_emulation
+            and is_deep_gemm_e8m0_used()
+        ):
+            qintermediate_cache2, a2q_scale = _silu_mul_quant_ue8m0(
+                intermediate_cache1.view(-1, N)
             )
         elif (
             activation == MoEActivation.SILU

@@ -21,6 +21,15 @@ be resumed; it does not set the physical page width. See
 
 ## Optimization Levels
 
+### H100 UE8M0 MoE activation
+
+For Qwen3.8-Flash-Next's 640-column expert intermediate on H100,
+TritonExperts combines BF16 SiLU-and-mul and group-128 UE8M0 FP8
+quantization in one kernel. It preserves both native BF16 rounding steps,
+the FP8 bytes and the scale layout. Expert routing and GEMM configuration
+remain unchanged. Clamp, LoRA, quantization emulation and other intermediate
+widths keep their existing activation paths.
+
 ### Nabla SM90 graph coverage and host planning
 
 For Qwen3.8-Flash-Next (`qwen4_exp`) and DeepSeek-V4.1-Flash
