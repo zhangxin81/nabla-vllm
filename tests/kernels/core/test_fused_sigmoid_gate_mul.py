@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
+from pathlib import Path
+
 import pytest
 import torch
 
 from vllm.kernels.triton.fused_sigmoid_gate_mul import fused_sigmoid_gate_mul
+from vllm.model_executor.layers.linear import ReplicatedLinear
+from vllm.model_executor.models.qwen3_moe import Qwen3MoeMLP
 from vllm.platforms import current_platform
-from vllm.utils.torch_utils import set_random_seed
+from vllm.utils.torch_utils import set_default_torch_dtype, set_random_seed
 
 DTYPES = [torch.bfloat16, torch.float16, torch.float32]
 # Odd token counts, non-power-of-2 and large hidden, plus an empty batch.
@@ -210,3 +215,46 @@ def test_broadcast_gate_compilation_keeps_eager_sequence():
     ).reshape(3, 1)
     compiled = torch.compile(fused_sigmoid_gate_mul, fullgraph=True, backend="eager")
     assert torch.equal(compiled(x, gate), x * torch.sigmoid(gate))
+
+
+@requires_cuda
+@pytest.mark.skipif(
+    not current_platform.is_cuda()
+    or not current_platform.is_device_capability_family(90),
+    reason="Qwen scalar gate selection targets Hopper",
+)
+@pytest.mark.parametrize("tokens, expected_calls", [(8, 1), (9, 0)])
+@torch.inference_mode()
+def test_qwen_shared_gate_keeps_larger_batches_eager(
+    tokens: int, expected_calls: int, dist_init, tmp_path: Path
+):
+    """Use the original chain above eight rows to avoid decode regressions."""
+    set_random_seed(43)
+    with set_default_torch_dtype(torch.bfloat16), torch.device("cuda"):
+        gate = ReplicatedLinear(2560, 1, bias=False)
+        mlp = Qwen3MoeMLP(2560, 640, "silu", expert_gate=gate, disable_tp=True)
+    for parameter in mlp.parameters():
+        torch.nn.init.normal_(parameter, std=0.01)
+    for layer in (mlp.gate_up_proj, mlp.down_proj, gate):
+        layer.quant_method.process_weights_after_loading(layer)
+    x = torch.randn(tokens, 2560, device="cuda", dtype=torch.bfloat16)
+    mlp(x)
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ]
+    ) as profile:
+        out = mlp(x)
+        torch.accelerator.synchronize()
+    path = tmp_path / "gate.json"
+    profile.export_chrome_trace(str(path))
+    events = json.loads(path.read_text())["traceEvents"]
+    calls = sum(
+        event.get("cat") == "kernel"
+        and "_fused_sigmoid_gate_mul_kernel" in event.get("name", "")
+        for event in events
+    )
+    assert calls == expected_calls
+    assert out.shape == x.shape and out.dtype == x.dtype
+    assert torch.isfinite(out).all()

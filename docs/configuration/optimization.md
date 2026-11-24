@@ -707,8 +707,9 @@ For detailed information on available backends, their feature support, and how t
 
 Qwen MoE shared experts keep the original gate module and GEMM. On Hopper,
 contiguous BF16 output rows with a BF16 scalar gate use a fused sigmoid and
-multiply for 1–128 tokens and up to 4096 output columns. The sigmoid result is rounded to BF16 before the
-product, preserving the eager sequence's intermediate dtype.
+multiply for 1–8 padded model rows and up to 4096 output columns. The sigmoid
+result is rounded to BF16 before the product, preserving the eager sequence's
+intermediate dtype.
 
 Selection is automatic. Larger batches, other devices or dtypes, strided
 inputs, compilation and `VLLM_BATCH_INVARIANT=1` retain the eager scalar gate
@@ -721,6 +722,7 @@ The shared-gate direction follows
 keeps the dot product outside the fusion. Compare the complete gate chain with:
 
 ```bash
+uv pip install 'cupti-python==13.5.0'
 .venv/bin/python benchmarks/kernels/benchmark_shared_expert_gate.py \
   --num-tokens 1 8 32 64 128 129 1024 --output-json gate-results.json
 ```

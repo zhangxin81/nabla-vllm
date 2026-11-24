@@ -65,7 +65,10 @@ def main():
                         return torch.sigmoid(gate(x)[0]) * out
 
                     def candidate(x=x, out=out):
-                        return fused_sigmoid_gate_mul(out, gate(x)[0])
+                        projected_gate = gate(x)[0]
+                        if 0 < out.shape[0] <= 8 and out.shape != projected_gate.shape:
+                            return fused_sigmoid_gate_mul(out, projected_gate)
+                        return torch.sigmoid(projected_gate) * out
 
                     expected, actual = baseline(), candidate()
                     assert torch.equal(actual, expected)

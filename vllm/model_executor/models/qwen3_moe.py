@@ -132,10 +132,10 @@ class Qwen3MoeMLP(nn.Module):
 
         if self.expert_gate is not None:
             gate = self.expert_gate(x)[0]
-            if out.shape == gate.shape:
-                out = torch.sigmoid(gate) * out
-            else:
+            if 0 < out.shape[0] <= 8 and out.shape != gate.shape:
                 out = fused_sigmoid_gate_mul(out, gate)
+            else:
+                out = torch.sigmoid(gate) * out
 
         return out
 
