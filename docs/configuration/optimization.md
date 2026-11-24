@@ -202,6 +202,17 @@ The corresponding H100 standalone and 4P4D groups did not establish a stable
 serving gain. These results do not cover FP8 indexer KV or establish gains
 against later Nabla commits.
 
+With an 8192-token chunk budget and 261888 input tokens at concurrency 1,
+separate controlled A/B/B/A groups improved output throughput by 7.85%/7.89%
+on H20 and 7.32%/7.52% on H100 for seeds 43/47. Median TTFT decreased by
+7.40%/7.44% and 7.08%/7.14%, respectively. Each hardware group completed
+192/192 timed requests and all 67 quality and eight long-context probes per run.
+The 32K/C4 controls were near flat; TPOT did not show a consistent improvement.
+These groups use the same frozen baseline, FP8 main KV and BF16 indexer KV;
+they do not measure TP8 or H20 4P4D serving. See the
+[complete Qwen validation](../benchmarks/nabla-vllm/qwen-qsa-20261124.md)
+for per-run data, negative results and excluded runs.
+
 ## Parallelism Strategies
 
 vLLM supports multiple parallelism strategies that can be combined to optimize performance across different hardware configurations.

@@ -30,6 +30,7 @@ unrelated history. It does not merge or modify the upstream PRs.
 | [#64670](https://github.com/vllm-project/vllm/pull/64670) | `31c4f772dd375f4fd271b473688ce31f8e425adc` | Copy offloaded GDN warmup parameters to the cache device. Test a real Qwen GDN layer and retain the original CPU parameters. |
 | [#69041](https://github.com/vllm-project/vllm/pull/69041) | `0230b05c3afa0498ea46d9e0df5dd055046804fc` | Default asynchronous generation rendering to four workers; preserve one for offline `LLM`, pooling and explicit overrides. `EngineArgs` mirrors the owning `ModelConfig` default. |
 | [#69023](https://github.com/vllm-project/vllm/pull/69023) | `0d69deb811589538cd331157eface431993c47da` | Read the DSpark draft's native MegaMoE flag from its first FFN layer, matching the weight loader. Specialized DSpark remains disabled in the H100 serving comparison. |
+| [#65606](https://github.com/vllm-project/vllm/pull/65606) | `68d75d9c767853283bfe407d60fc687beb608546` | Shard eligible SM90 BF16 QSA prefill rows on TP4/TP8 and exchange final indices. See [Qwen validation](../benchmarks/nabla-vllm/qwen-qsa-20261124.md) for H20/H100 serving gains, controls and P/D limits. |
 
 ### Closure-migration source revisions
 
