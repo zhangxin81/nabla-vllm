@@ -6,7 +6,6 @@ import torch
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
-from vllm.kernel_buckets import select_nearest_m
 from vllm.model_executor.layers.fused_moe.activation import (
     MoEActivation,
     apply_moe_activation_supported,
@@ -464,7 +463,9 @@ class TritonExperts(LoRAExpertsMixin, mk.FusedMoEExpertsModular):
             else None
         )
         tma_down_config = (
-            dict(select_nearest_m(down_configs, num_tokens)) if down_configs else None
+            dict(down_configs[min(down_configs, key=lambda m: abs(m - num_tokens))])
+            if down_configs
+            else None
         )
 
         use_sorted_a = bool(

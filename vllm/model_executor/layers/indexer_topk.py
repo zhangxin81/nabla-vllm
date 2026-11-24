@@ -9,7 +9,6 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.config import get_current_vllm_config, get_current_vllm_config_or_none
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils.flashinfer import has_flashinfer, has_flashinfer_topk_varlen_gvr2
@@ -362,13 +361,13 @@ class SparseIndexerTopk(torch.nn.Module):
         # float4 row loads: the row pitch must be a multiple of 4 elements and
         # the base 16-byte aligned; rows may not overlap (an expand view).
         num_rows, width = logits.shape
-        row_pitch = logits.stride(0) if m_in_range(num_rows, start=2) else width
-        if row_pitch % 4 != 0 or (m_in_range(num_rows, start=2) and row_pitch < width):
+        row_pitch = logits.stride(0) if num_rows > 1 else width
+        if row_pitch % 4 != 0 or (num_rows > 1 and row_pitch < width):
             failures.append(
                 f"logits row stride must be a multiple of 4 and at least the "
                 f"row width, got stride(0)={row_pitch}, width={width}"
             )
-        elif m_in_range(num_rows, start=2) and logits.untyped_storage().nbytes() < (
+        elif num_rows > 1 and logits.untyped_storage().nbytes() < (
             (logits.storage_offset() + num_rows * row_pitch) * logits.element_size()
         ):
             failures.append("logits storage must cover every row's full stride")
@@ -393,7 +392,7 @@ class SparseIndexerTopk(torch.nn.Module):
         if (
             self._backend == "flashinfer_gvr2"
             and row_starts is None
-            and m_in_range(logits.shape[0], start=GVR2_PREFILL_MIN_ROWS)
+            and logits.shape[0] >= GVR2_PREFILL_MIN_ROWS
             and self._has_flashinfer_gvr2
             and not self._gvr2_constraints(logits, topk_tokens)
         ):
@@ -456,7 +455,7 @@ class SparseIndexerTopk(torch.nn.Module):
             failures.append(
                 f"topk_tokens must be in (512, 1024, 2048), got {topk_tokens}"
             )
-        if m_in_range(num_rows, start=AUTO_COOPERATIVE_MAX_ROWS + 1):
+        if num_rows > AUTO_COOPERATIVE_MAX_ROWS:
             failures.append(
                 f"num_rows must be <= {AUTO_COOPERATIVE_MAX_ROWS}, got {num_rows}"
             )

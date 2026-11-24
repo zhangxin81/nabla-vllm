@@ -7,7 +7,6 @@ upstream's broad feature-by-feature table does not validate these combinations.
 
 | Area | Nabla behavior and evidence |
 | --- | --- |
-| Operator dispatch | [Unified multidimensional buckets](../design/operator_kernel_buckets.md) retain per-op thresholds and Prefill/Decode/Mixed/Verify identities. |
 | Input and CPU planning | [PLE staging, workspace/Humming plans and attention metadata reuse](../benchmarks/nabla-vllm/h20-input-host-planning-20261123.md) have separately scoped component and serving results. |
 | CUDA Graphs | [SM90 defaults](../configuration/optimization.md#nabla-sm90-graph-coverage-and-host-planning) separate prefill and decode grids; explicit settings take precedence and padding can change output. |
 | Prefix and recurrent cache | [Current cache policy](../design/specialized_hybrid_cache.md) uses upstream hybrid BlockPool/checkpoint management; the earlier independent ownership design was reverted. |

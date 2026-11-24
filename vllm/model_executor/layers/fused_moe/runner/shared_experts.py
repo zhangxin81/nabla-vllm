@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
 from collections.abc import Callable
 from enum import IntEnum
 
@@ -8,7 +7,6 @@ import torch
 
 import vllm.envs as envs
 from vllm.config import get_current_vllm_config_or_none
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
@@ -132,10 +130,8 @@ class SharedExperts(torch.nn.Module):
         should_run_shared_in_aux_stream = (
             current_platform.is_cuda_alike()
             and self._stream is not None
-            and m_in_range(
-                hidden_states.shape[0],
-                stop=envs.VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD + 1,
-            )
+            and hidden_states.shape[0]
+            <= envs.VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
         )
 
         if should_run_shared_in_aux_stream:

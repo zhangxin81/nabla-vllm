@@ -44,7 +44,6 @@ from torch import nn
 
 from vllm.distributed import get_tp_group
 from vllm.forward_context import get_forward_context
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.kernels.attention.dsa.candidate_blocks import (
     apply_candidate_mask,
     select_candidate_blocks,
@@ -104,7 +103,7 @@ def row_shard_rows(num_rows: int, num_requests: int, world_size: int) -> int | N
     """
     if world_size < 2 or not num_requests or num_rows % num_requests:
         return None
-    if m_in_range(num_rows, stop=ROW_SHARD_MIN_ROWS):
+    if num_rows < ROW_SHARD_MIN_ROWS:
         return None
     rows = -(-num_rows // world_size)
     return rows + rows % 2

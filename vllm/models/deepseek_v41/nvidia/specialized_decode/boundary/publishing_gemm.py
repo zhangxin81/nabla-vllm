@@ -98,7 +98,6 @@ from flashinfer.gemm.kernels.cute_dsl.low_latency_blockscaled_gemm import (
     WorkTileInfo,
 )
 
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.layers.fusion.quant_activation import (
     QuantizedActivation,
     as_quantized_activation,
@@ -471,7 +470,7 @@ class PublishingMxfp8Linear:
         )
         return (
             mxfp8_eligible(linear)
-            and m_in_range(num_tokens, start=1, stop=max_rows + 1)
+            and 0 < num_tokens <= max_rows
             and linear.weight.shape[1] == all_reduce.hidden_size
             and getattr(linear, "bias", None) is None
         )

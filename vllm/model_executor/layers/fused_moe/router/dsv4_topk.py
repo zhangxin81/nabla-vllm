@@ -3,7 +3,6 @@
 
 import torch
 
-from vllm.kernel_buckets import m_in_range
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 
@@ -149,7 +148,7 @@ def dsv4_topk(
     shape = (num_tokens, _TOPK)
     topk_weights = gating_output.new_empty(shape, dtype=torch.float32)
     topk_ids = gating_output.new_empty(shape, dtype=indices_dtype)
-    if m_in_range(num_tokens, start=1):
+    if num_tokens > 0:
         _dsv4_topk_kernel[(num_tokens,)](
             gating_output,
             correction_bias,

@@ -11,8 +11,7 @@ use is text generation on Qwen3.8-Flash-Next or DeepSeek-V4.1-Flash.
 - [NIXL P/D](../features/nixl_connector_usage.md) separates prefill and decode
   with matching cache geometry and protocol versions.
 - [Optimization](../configuration/optimization.md) covers Graph settings and
-  target-model execution choices; [operator buckets](../design/operator_kernel_buckets.md)
-  preserve shape and phase-specific dispatch.
+  target-model execution choices.
 - [Performance records](../benchmarks/nabla-vllm/h20-input-host-planning-20261123.md)
   state the baseline, input/output shape and output differences for each result.
 

@@ -43,7 +43,6 @@ import torch
 
 from vllm.config import VllmConfig
 from vllm.forward_context import is_forward_context_available
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.kernels.mhc.triton import hc_collapse_triton
 from vllm.models.deepseek_v41.common.ops.query_quant import can_fuse_query_quant
@@ -156,7 +155,7 @@ class DraftDecode:
         `FUSED_MHC_MAX_ROWS` rows run the executor."""
         rows = positions.shape[0]
         if (
-            not m_in_range(rows, start=1, stop=FUSED_MHC_MAX_ROWS + 1)
+            not 0 < rows <= FUSED_MHC_MAX_ROWS
             or not is_forward_context_available()
             or not torch.cuda.is_current_stream_capturing()
             or not captures_pure_decode(self._swa_prefixes)

@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 import torch
 
 import vllm.envs as envs
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.warmup.jit_warmup_triton_helper import (
     TritonWarmupTensor,
 )
@@ -610,7 +609,7 @@ def _topk(
         _gvr2_topk(logits, visible_blocks, block_topk, block_indices, prefill)
         return
     cooperative_supported = (
-        m_in_range(logits.shape[0], stop=65)
+        logits.shape[0] <= 64
         and logits.stride(0) % 4 == 0
         and current_platform.has_device_capability(90)
         and not current_platform.is_device_capability_family(110)

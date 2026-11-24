@@ -28,7 +28,6 @@ import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.forward_context import get_forward_context
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
 from vllm.model_executor.layers.quantization.utils.quant_utils import kMxfp8Dynamic
 from vllm.models.deepseek_v41.common.ops import (
@@ -451,7 +450,7 @@ class DeepseekV4MegaAttnAttention(DeepseekV4FlashMLAAttention):
         swa_idx = swa_metadata.decode_swa_indices.view(q.shape[0], -1)
         if (
             self._use_swapab
-            and m_in_range(q.shape[0], stop=_SWAPAB_MAX_TOKENS + 1)
+            and q.shape[0] <= _SWAPAB_MAX_TOKENS
             and extra_cache is not None
             # The cluster and the warmed-up compile key are sized for the
             # window; DSpark's non-causal draft steps widen the SWA list past it.

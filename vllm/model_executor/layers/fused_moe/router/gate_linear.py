@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
 from functools import cache
 
 import torch
@@ -9,7 +8,6 @@ from torch.nn.parameter import Parameter
 import vllm._custom_ops as ops
 import vllm.envs as envs
 from vllm.config import get_current_vllm_config_or_none
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.linear import (
@@ -308,7 +306,7 @@ class GateLinear(ReplicatedLinear):
         # any dims w/ K divisible by 8)
         if (
             self.allow_ll_bf16_gemm
-            and m_in_range(x.shape[0], stop=self.LL_BF16_MAX_TOKENS + 1)
+            and x.shape[0] <= self.LL_BF16_MAX_TOKENS
             and x.dtype == torch.bfloat16
         ):
             from vllm.model_executor.kernels.linear.cute_dsl.ll_bf16 import (
@@ -350,7 +348,7 @@ class GateLinear(ReplicatedLinear):
         # Tier 3: cuteDSL ll_fp32w_gemm (SM90+, bf16/fp32 in, fp32 out)
         if (
             self.allow_ll_fp32w_gemm
-            and m_in_range(x.shape[0], stop=33)
+            and x.shape[0] <= 32
             and x.dtype in (torch.bfloat16, torch.float16, torch.float32)
         ):
             from vllm.model_executor.kernels.linear.cute_dsl.ll_fp32w import (
@@ -509,7 +507,7 @@ def rocm_bf16x3_router_gemm_dispatch_impl(
     aiter_gemm = _aiter_gemm_a16w32() if rocm_aiter_ops.is_enabled() else None
     if (
         aiter_gemm is not None
-        and m_in_range(x.shape[0], start=1)
+        and x.shape[0] > 0
         and x.dtype == torch.bfloat16
         and weight.dtype == torch.float32
         and x.device == weight.device
@@ -517,7 +515,7 @@ def rocm_bf16x3_router_gemm_dispatch_impl(
         return aiter_gemm(x, weight, weight_split)
     # Without AITER's kernel, hand back to the low-M gfx950 kernel this tier
     # is checked ahead of.
-    if m_in_range(x.shape[0], stop=_FP32_ROUTER_GEMM_MAX_TOKENS + 1):
+    if x.shape[0] <= _FP32_ROUTER_GEMM_MAX_TOKENS:
         from vllm.model_executor.layers.fused_moe.router.rocm_fp32_router_gemm import (  # noqa: E501
             can_use_rocm_fp32_router_gemm,
             rocm_fp32_router_gemm,
@@ -564,10 +562,7 @@ def fp32_router_gemm_dispatch_impl(
         from vllm.platforms.rocm import get_cdna_version
 
         # gfx1250's path (aiter tgemm) has no token limit.
-        if (
-            m_in_range(x.shape[0], stop=_FP32_ROUTER_GEMM_MAX_TOKENS + 1)
-            or get_cdna_version() >= 5
-        ):
+        if x.shape[0] <= _FP32_ROUTER_GEMM_MAX_TOKENS or get_cdna_version() >= 5:
             x = x.contiguous()
             if can_use_rocm_fp32_router_gemm(x, weight):
                 return rocm_fp32_router_gemm(x, weight)
@@ -588,7 +583,7 @@ def fp32_router_gemm_dispatch_impl(
         # Muse Spark on B300: the FP32 kernel's grid starves the main stream
         # when it runs on the routing stream.
         max_tokens = 16
-    if m_in_range(x.shape[0], stop=max_tokens + 1):
+    if x.shape[0] <= max_tokens:
         return ops.fp32_router_gemm(x, weight)
 
     if allow_bf16x3_router_gemm and x.dtype == torch.bfloat16:

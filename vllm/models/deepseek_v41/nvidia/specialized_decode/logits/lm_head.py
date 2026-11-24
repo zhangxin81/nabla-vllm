@@ -12,7 +12,6 @@ gate is the row count alone.
 import torch
 from torch import nn
 
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.layers.utils import _can_use_flashinfer_cutedsl_bf16
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -37,7 +36,7 @@ def low_batch_lm_head_applies(lm_head: nn.Module, x: torch.Tensor) -> bool:
         isinstance(lm_head, ParallelLMHead)
         and type(lm_head.quant_method) is UnquantizedEmbeddingMethod
         and x.dim() == 2
-        and m_in_range(x.shape[0], start=1, stop=LM_HEAD_MAX_ROWS + 1)
+        and 0 < x.shape[0] <= LM_HEAD_MAX_ROWS
         and is_flashinfer_cutedsl_bf16_gemm_supported()
         and _can_use_flashinfer_cutedsl_bf16(x, lm_head.weight, None)
     )

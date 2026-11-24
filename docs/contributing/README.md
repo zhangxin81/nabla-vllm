@@ -1,9 +1,9 @@
 # Contributing to nabla-vllm
 
 Contributions focus on Qwen3.8-Flash-Next and DeepSeek-V4.1-Flash on NVIDIA
-CUDA, P/D serving and unified operator buckets. Start with the
-[target scope](../models/supported_models.md), [design](../design/operator_kernel_buckets.md)
-and fixed-source [performance evidence](../benchmarking/README.md).
+CUDA, P/D serving and target-operator optimizations. Start with the
+[target scope](../models/supported_models.md) and fixed-source
+[performance evidence](../benchmarking/README.md).
 Report reproducible bugs, regressions or measured improvements in
 [this repository](https://github.com/zhangxin81/nabla-vllm/issues).
 

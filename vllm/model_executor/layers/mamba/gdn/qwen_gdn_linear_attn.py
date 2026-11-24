@@ -24,7 +24,6 @@ from vllm.distributed import (
     divide,
 )
 from vllm.forward_context import ForwardContext, get_forward_context
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp, PluggableLayer
 from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
@@ -979,7 +978,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 start,
                 [done],
                 [self._ba_stream],
-                enable=m_in_range(num_tokens, stop=_BA_PROJ_OVERLAP_MAX_TOKENS + 1)
+                enable=num_tokens <= _BA_PROJ_OVERLAP_MAX_TOKENS
                 and torch.cuda.is_current_stream_capturing(),
             )
 

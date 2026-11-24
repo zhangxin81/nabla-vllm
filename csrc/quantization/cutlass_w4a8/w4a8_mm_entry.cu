@@ -1,4 +1,3 @@
-#include "core/kernel_buckets.h"
 //
 // Based off of:
 //   https://github.com/NVIDIA/cutlass/blob/main/examples/55_hopper_mixed_dtype_gemm/55_hopper_int4_fp8_gemm.cu
@@ -339,34 +338,34 @@ torch::stable::Tensor mm(
   int K = A.size(1);
   int N = B.size(1);
   // heuristic
-  if (vllm::kernel_buckets::m_in_range(M, 0, 17)) {
+  if (M <= 16) {
     schedule = (K == 16384 && N == 18432) ? "256x16_1x1x1" : "128x16_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 33)) {
+  } else if (M <= 32) {
     schedule = (K == 16384 && N == 18432) ? "256x32_1x1x1" : "128x32_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 65)) {
+  } else if (M <= 64) {
     if (K == 16384 && N == 18432)
       schedule = "256x64_1x1x1";
     else if (N <= 8192 && K <= 8192)
       schedule = "128x32_1x1x1";
     else
       schedule = "128x64_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 129)) {
+  } else if (M <= 128) {
     if (K == 16384 && N == 18432)
       schedule = "256x128_1x1x1";
     else if (N <= 8192)
       schedule = "128x64_1x1x1";
     else
       schedule = "128x128_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 257)) {
+  } else if (M <= 256) {
     if (N <= 4096)
       schedule = "128x64_1x1x1";
     else if (N <= 8192)
       schedule = "128x128_1x1x1";
     else
       schedule = "128x256_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 513) && N <= 4096) {
+  } else if (M <= 512 && N <= 4096) {
     schedule = "128x128_1x1x1";
-  } else if (vllm::kernel_buckets::m_in_range(M, 0, 1025)) {
+  } else if (M <= 1024) {
     schedule = "128x256_1x1x1";
   } else {
     schedule = "128x256_2x1x1";

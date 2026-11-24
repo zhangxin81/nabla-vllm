@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/kernel_buckets.h"
 #include <torch/headeronly/util/shim_utils.h>
 
 #include "scaled_mm.cuh"
@@ -270,13 +269,13 @@ inline void cutlass_gemm_sm100_fp8_dispatch(
   uint32_t const m = a.size(0);
   uint32_t const k = a.size(1);
 
-  if (vllm::kernel_buckets::m_in_range(m, 0, 17)) {
+  if (m <= 16) {
     // m in [1, 16]
     return cutlass_gemm_caller_sm100_fp8<Cutlass3xGemmM16SwapAB>(
         out, a, b, b_scales, a_scales, std::forward<EpilogueArgs>(args)...);
-  } else if (vllm::kernel_buckets::m_in_range(m, 0, 65)) {
+  } else if (m <= 64) {
     // m in (16, 64]
-    if (vllm::kernel_buckets::m_in_range(m, 64, 65) && k < 4096) {
+    if (m == 64 && k < 4096) {
       // do not enable swap AB
       return cutlass_gemm_caller_sm100_fp8<Cutlass3xGemmM64>(
           out, a, b, a_scales, b_scales, std::forward<EpilogueArgs>(args)...);
@@ -284,7 +283,7 @@ inline void cutlass_gemm_sm100_fp8_dispatch(
     return cutlass_gemm_caller_sm100_fp8<Cutlass3xGemmM64SwapAB>(
         out, a, b, b_scales, a_scales, std::forward<EpilogueArgs>(args)...);
 
-  } else if (vllm::kernel_buckets::m_in_range(m, 0, 257)) {
+  } else if (m <= 256) {
     // m in (64, 256]
     return cutlass_gemm_caller_sm100_fp8<Cutlass3xGemmM256>(
         out, a, b, a_scales, b_scales, std::forward<EpilogueArgs>(args)...);

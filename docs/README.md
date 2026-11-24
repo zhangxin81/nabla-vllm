@@ -2,7 +2,7 @@
 
 nabla-vllm 是独立维护的 vLLM 下游，面向 **Qwen3.8-Flash-Next** 和
 **DeepSeek-V4.1-Flash** 的 NVIDIA CUDA 推理。项目聚焦目标模型的执行路径、
-P/D 分离和统一算子分桶，按固定源码、硬件、精度和请求形状记录性能与正确性。
+P/D 分离和目标算子优化，按固定源码、硬件、精度和请求形状记录性能与正确性。
 
 ## 目标模型和执行范围
 
@@ -12,7 +12,7 @@ P/D 分离和统一算子分桶，按固定源码、硬件、精度和请求形�
 | 硬件 | NVIDIA CUDA；保留 H20、H100、B200 等架构的选择路径，实测范围逐项记录 |
 | 缓存 | 上游混合 KV／GDN BlockPool 与 checkpoint 策略；旧独立 ownership 方案已回退 |
 | P/D | NixlConnector 和显式开启的同机 CUDA IPC，要求匹配配置和缓存几何 |
-| 算子 | 保留原有多维阈值，用统一接口表达范围、执行阶段和 Agent Kernel 分桶标识 |
+| 算子 | 保留原有多维阈值和各算子的配置选择，优化范围以对应源码和实测为准 |
 | 兼容入口 | 安装包与主命令为 nabla-vllm，Python imports、兼容命令和配置继续使用 vllm 名称 |
 
 代码中保留某项接口或硬件分支，不等于全部部署组合已验证。多模态、推测解码、
@@ -29,7 +29,6 @@ P/D 分离和统一算子分桶，按固定源码、硬件、精度和请求形�
 
 ## 性能证据对应具体版本
 
-[统一算子分桶设计](design/operator_kernel_buckets.md)记录接口、覆盖和边界，
 [下游 PR 集成](design/nabla_vllm_pr_integration.md)记录源提交和实际适配。
 [H100 对照](benchmarks/nabla-vllm/h100-cache-rollback-20261122.md)与
 [H20 输入准备和 CPU 计划优化](benchmarks/nabla-vllm/h20-input-host-planning-20261123.md)

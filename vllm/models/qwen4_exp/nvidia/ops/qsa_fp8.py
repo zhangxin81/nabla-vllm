@@ -12,7 +12,6 @@ here via use_fp8_decode_kernel; every QK/PV product is the split-K kernel's
 
 import torch
 
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.warmup.jit_warmup_triton_helper import (
     TritonWarmupTensor,
     triton_scalar_specialization_rep,
@@ -276,7 +275,7 @@ def use_fp8_decode_kernel(base_programs: int, cache_dtype: torch.dtype) -> bool:
     """
     return (
         cache_dtype == torch.float8_e4m3fn
-        and m_in_range(base_programs, start=_DECODE_MIN_PROGRAMS + 1)
+        and base_programs > _DECODE_MIN_PROGRAMS
         and _is_sm100_family()
     )
 

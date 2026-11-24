@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from vllm.forward_context import get_forward_context
-from vllm.kernel_buckets import m_in_range
 from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
 from vllm.model_executor.layers.sparse_attn_indexer import SparseAttnIndexer
 from vllm.models.deepseek_v41.attention import DeepseekV4Indexer
@@ -241,7 +240,7 @@ class AttentionStep:
             attn.q_norm.weight.data,
             attn.kv_norm.weight.data,
             attn.eps,
-            early_trigger=m_in_range(qr.shape[0], stop=WIDE_LOW_LATENCY_MAX_ROWS + 1),
+            early_trigger=qr.shape[0] <= WIDE_LOW_LATENCY_MAX_ROWS,
         )
         return qr_quant, None, kv
 

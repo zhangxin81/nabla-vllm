@@ -236,7 +236,6 @@ from vllm.forward_context import (
     get_forward_context,
     in_piecewise_cudagraph,
 )
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.attention.attention import (
@@ -1338,9 +1337,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
             return None
         if self.impl.dcp_world_size > 1:
             assert self.dcp_manager is not None
-            if m_in_range(
-                q.shape[0], start=self.dcp_manager.direct_query_gather_max_tokens + 1
-            ):
+            if q.shape[0] > self.dcp_manager.direct_query_gather_max_tokens:
                 return None
         if self.kv_sharing_target_layer_name is None:
             torch.ops.vllm.unified_mla_kv_cache_update(

@@ -50,7 +50,6 @@ from cutlass import BFloat16, Float32, Int32, Int64
 from cutlass.cute.nvgpu import cpasync, warp
 from cutlass.cute.runtime import make_fake_stream
 
-from vllm.kernel_buckets import m_in_range
 from vllm.models.common.ops.moe_tail_fusion.primitives import current_cu_stream
 
 from .mhc import MIXES, load_f32x4, warp_sum
@@ -352,7 +351,7 @@ def mhc_projection(
     assert fn.is_contiguous() and fn.data_ptr() % 16 == 0
     mixes = torch.empty(SPLITS, rows, MIXES, dtype=torch.float32, device=x.device)
     sqrsum = torch.empty(SPLITS, rows, dtype=torch.float32, device=x.device)
-    if m_in_range(rows, start=1):
+    if rows > 0:
         _kernel(x.device.index, width)(
             _pointer(BFloat16, x, 16),
             Int64(fn.data_ptr()),

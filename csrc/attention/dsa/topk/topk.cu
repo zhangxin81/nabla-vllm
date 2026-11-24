@@ -1,7 +1,6 @@
 // Persistent TopK kernel for DeepSeek V3 sparse attention indexer.
 // See persistent_topk.cuh for kernel implementation.
 
-#include "core/kernel_buckets.h"
 #include <cuda_runtime.h>
 #include <algorithm>
 
@@ -48,7 +47,7 @@ void launch_persistent_topk(const torch::stable::Tensor& logits,
   const bool use_sampled = true;
 #else
   const bool use_sampled =
-      vllm::kernel_buckets::m_in_range(num_rows, 65) &&
+      num_rows > 64 &&
       max_seq_len >= vllm::sampled_topk::kMinSampledLength<TopK>;
 #endif
   if (use_sampled && max_smem_per_block >= 144 * 1024) {
@@ -64,8 +63,7 @@ void launch_persistent_topk(const torch::stable::Tensor& logits,
         input, lengths.const_data_ptr<int32_t>(),
         output.mutable_data_ptr<int32_t>(), stride,
         static_cast<int>(std::min(max_seq_len, logits.size(1))));
-  } else if (vllm::kernel_buckets::m_in_range(num_rows, 33) &&
-             max_smem_per_block >= 128 * 1024) {
+  } else if (num_rows > 32 && max_smem_per_block >= 128 * 1024) {
     cudaError_t status = vllm::FilteredTopKRaggedTransform<InT, int32_t, TopK>(
         input, output.mutable_data_ptr<int32_t>(),
         lengths.const_data_ptr<int32_t>(), static_cast<uint32_t>(num_rows),
@@ -79,10 +77,10 @@ void launch_persistent_topk(const torch::stable::Tensor& logits,
         "workspace must be uint8");
 
     int effective_max_smem;
-    if (vllm::kernel_buckets::m_in_range(num_rows, 0, 5)) {
+    if (num_rows <= 4) {
       effective_max_smem =
           std::min(max_smem_per_block, static_cast<int>(P::kSmemMedium));
-    } else if (vllm::kernel_buckets::m_in_range(num_rows, 0, 9)) {
+    } else if (num_rows <= 8) {
       constexpr int kSmemCapMedium = 48 * 1024;
       effective_max_smem = std::min(max_smem_per_block, kSmemCapMedium);
     } else {

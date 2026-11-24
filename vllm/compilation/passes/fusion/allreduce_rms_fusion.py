@@ -23,7 +23,6 @@ from vllm.distributed.parallel_state import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
-from vllm.kernel_buckets import m_in_range
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     GroupShape,
@@ -291,7 +290,7 @@ if flashinfer_comm is not None:
             # and keeps the early completion. Related one-shot instability in
             # the same kernel: flashinfer-ai/flashinfer#1223.
             trigger_completion_at_end=(use_oneshot is True)
-            or m_in_range(num_tokens, start=PDL_ADVANCE_LAUNCH_TOKENS + 1),
+            or num_tokens > PDL_ADVANCE_LAUNCH_TOKENS,
         )
 
     direct_register_custom_op(

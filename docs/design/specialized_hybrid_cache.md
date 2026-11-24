@@ -23,7 +23,3 @@ GDN 算子与 kernel 优化、投影重叠、FP8 和 FlashMLA 改动保留。
 后续输入准备和 CPU 计划改动另有
 [H20 组合记录](../benchmarks/nabla-vllm/h20-input-host-planning-20261123.md)，
 其输出差异和验证边界单列；这些历史结果不自动验证后续源码组合。
-
-算子的范围判定、配置选择与执行阶段由
-[统一分桶接口](operator_kernel_buckets.md) 管理，作为 Agent Kernel 库的接入基础。
-分桶保留原有阈值和多维选择，独立表示 Prefill、Decode、Mixed 与 Verify。

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/kernel_buckets.h"
 #include <torch/headeronly/util/shim_utils.h>
 
 #include "scaled_mm.cuh"
@@ -153,20 +152,20 @@ inline void cutlass_gemm_sm120_fp8_dispatch(torch::stable::Tensor& out,
 
   int M = a.size(0);
 
-  if (vllm::kernel_buckets::m_in_range(M, 0, 17)) {
+  if (M <= 16) {
     using Cutlass3xGemmM16 =
         typename sm120_fp8_config_M16<InType, OutType, Epilogue>::Cutlass3xGemm;
     return cutlass_gemm_caller<Cutlass3xGemmM16>(
         out, a, b, std::forward<EpilogueArgs>(args)...);
   }
-  if (vllm::kernel_buckets::m_in_range(M, 0, 33)) {
+  if (M <= 32) {
     using Cutlass3xGemmM32 =
         typename sm120_fp8_config_M32<InType, OutType, Epilogue>::Cutlass3xGemm;
     return cutlass_gemm_caller<Cutlass3xGemmM32>(
         out, a, b, std::forward<EpilogueArgs>(args)...);
   }
 
-  if (vllm::kernel_buckets::m_in_range(M, 0, 257)) {
+  if (M <= 256) {
     using Cutlass3xGemmM64 =
         typename sm120_fp8_config_M64<InType, OutType, Epilogue>::Cutlass3xGemm;
     return cutlass_gemm_caller<Cutlass3xGemmM64>(

@@ -4,8 +4,7 @@ Nabla retains the vLLM V1 scheduler, worker, sampler and serving interfaces for
 its two [target models](../models/supported_models.md) on NVIDIA CUDA.
 Hybrid cache grouping, BlockPool allocation and recurrent checkpoint policy
 follow the [current cache implementation](../design/specialized_hybrid_cache.md).
-P/D transfer and [operator buckets](../design/operator_kernel_buckets.md) have
-separate configuration and verification requirements.
+P/D transfer has its own configuration and verification requirements.
 
 The following V0 comparisons explain inherited API behavior. They do not
 establish near-zero CPU overhead, zero-configuration deployment or support for
