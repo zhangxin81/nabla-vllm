@@ -55,6 +55,7 @@ nav:
       - benchmarking/sweeps.md
       - benchmarking/dashboard.md
       - Nabla Qwen QSA validation: benchmarks/nabla-vllm/qwen-qsa-20261124.md
+      - Nabla Qwen H100 operator profile: benchmarks/nabla-vllm/qwen38-h100-operator-profile-20261124.md
       - Nabla H20 input and host planning: benchmarks/nabla-vllm/h20-input-host-planning-20261123.md
   - API Reference:
     - api/README.md

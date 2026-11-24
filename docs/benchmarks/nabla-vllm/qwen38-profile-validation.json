@@ -1,0 +1,2605 @@
+{
+  "source_sha": "775e785ac3f34a9becb0d1dbd828d1c34b745277",
+  "verified_source_files": 8571,
+  "native_input_files_verified": 365,
+  "source_mismatches": [],
+  "formal_cases": 6,
+  "warmup_requests": 65,
+  "profiled_requests": 65,
+  "timed_output_tokens": 8320,
+  "trace_reports": 12,
+  "cases": [
+    {
+      "case": "i8192-c1-o128",
+      "input_tokens": 8192,
+      "concurrency": 1,
+      "output_tokens": 128,
+      "warmup_requests_passed": 1,
+      "profiled_requests_passed": 1,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 13
+          },
+          "scheduled_tokens": {
+            "prefill": 8191,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4095,
+                "padded_tokens": 4095,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 13
+          },
+          "scheduled_tokens": {
+            "prefill": 8191,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4095,
+                "padded_tokens": 4095,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 13
+          },
+          "scheduled_tokens": {
+            "prefill": 8191,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4095,
+                "padded_tokens": 4095,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 13
+          },
+          "scheduled_tokens": {
+            "prefill": 8191,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4095,
+                "padded_tokens": 4095,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 127
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 127
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 127
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 127,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 127
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case": "i8192-c8-o128",
+      "input_tokens": 8192,
+      "concurrency": 8,
+      "output_tokens": 128,
+      "warmup_requests_passed": 8,
+      "profiled_requests_passed": 8,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 16,
+            "transfer_only": 16
+          },
+          "scheduled_tokens": {
+            "prefill": 65528,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 16,
+            "transfer_only": 16
+          },
+          "scheduled_tokens": {
+            "prefill": 65528,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 16,
+            "transfer_only": 16
+          },
+          "scheduled_tokens": {
+            "prefill": 65528,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 16,
+            "transfer_only": 16
+          },
+          "scheduled_tokens": {
+            "prefill": 65528,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 1,
+            "decode": 354,
+            "mixed": 7,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 998,
+            "mixed": 25,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 69
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 66
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 79
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 140
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 5
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 1,
+            "decode": 354,
+            "mixed": 7,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 998,
+            "mixed": 25,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 69
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 66
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 79
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 140
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 5
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 1,
+            "decode": 354,
+            "mixed": 7,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 998,
+            "mixed": 25,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 69
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 66
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 79
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 140
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 5
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 1,
+            "decode": 354,
+            "mixed": 7,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 998,
+            "mixed": 25,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 69
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 66
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 79
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 140
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 5
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case": "i8192-c32-o128",
+      "input_tokens": 8192,
+      "concurrency": 32,
+      "output_tokens": 128,
+      "warmup_requests_passed": 32,
+      "profiled_requests_passed": 32,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262112,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4064,
+                "padded_tokens": 4064,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 32
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 31
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262112,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4064,
+                "padded_tokens": 4064,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 32
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 31
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262112,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4064,
+                "padded_tokens": 4064,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 32
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 31
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262112,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4064,
+                "padded_tokens": 4064,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 32
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 31
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 1,
+            "decode": 1068,
+            "mixed": 31,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 3948,
+            "mixed": 147,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 65
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 64
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 65
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 810
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 3
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 26
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 1,
+            "decode": 1068,
+            "mixed": 31,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 3948,
+            "mixed": 147,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 65
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 64
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 65
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 810
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 3
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 26
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 1,
+            "decode": 1068,
+            "mixed": 31,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 3948,
+            "mixed": 147,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 65
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 64
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 65
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 810
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 3
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 26
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 1,
+            "decode": 1068,
+            "mixed": 31,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 3948,
+            "mixed": 147,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 65
+              },
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 64
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 65
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 810
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 2,
+                "padded_tokens": 2,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 1
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4,
+                "padded_tokens": 4,
+                "actual_reqs": 4,
+                "padded_reqs": 4,
+                "steps": 3
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 26
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case": "i128-c8-o128",
+      "input_tokens": 128,
+      "concurrency": 8,
+      "output_tokens": 128,
+      "warmup_requests_passed": 8,
+      "profiled_requests_passed": 8,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 23
+          },
+          "scheduled_tokens": {
+            "prefill": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 127,
+                "padded_tokens": 128,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 889,
+                "padded_tokens": 896,
+                "actual_reqs": 7,
+                "padded_reqs": 7,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 23
+          },
+          "scheduled_tokens": {
+            "prefill": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 127,
+                "padded_tokens": 128,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 889,
+                "padded_tokens": 896,
+                "actual_reqs": 7,
+                "padded_reqs": 7,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 23
+          },
+          "scheduled_tokens": {
+            "prefill": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 127,
+                "padded_tokens": 128,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 889,
+                "padded_tokens": 896,
+                "actual_reqs": 7,
+                "padded_reqs": 7,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 2,
+            "transfer_only": 23
+          },
+          "scheduled_tokens": {
+            "prefill": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 127,
+                "padded_tokens": 128,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 889,
+                "padded_tokens": 896,
+                "actual_reqs": 7,
+                "padded_reqs": 7,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 1,
+            "decode": 131,
+            "mixed": 1,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1015,
+            "mixed": 8,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 4
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 5
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 122
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 1,
+            "decode": 131,
+            "mixed": 1,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1015,
+            "mixed": 8,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 4
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 5
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 122
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 1,
+            "decode": 131,
+            "mixed": 1,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1015,
+            "mixed": 8,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 4
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 5
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 122
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 1,
+            "decode": 131,
+            "mixed": 1,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1015,
+            "mixed": 8,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 4
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 5
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 122
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case": "i2048-c8-o128",
+      "input_tokens": 2048,
+      "concurrency": 8,
+      "output_tokens": 128,
+      "warmup_requests_passed": 8,
+      "profiled_requests_passed": 8,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 5,
+            "transfer_only": 15
+          },
+          "scheduled_tokens": {
+            "prefill": 16376,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 2041,
+                "padded_tokens": 2041,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 2047,
+                "padded_tokens": 2047,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 3
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 5,
+            "transfer_only": 15
+          },
+          "scheduled_tokens": {
+            "prefill": 16376,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 2041,
+                "padded_tokens": 2041,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 2047,
+                "padded_tokens": 2047,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 3
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 5,
+            "transfer_only": 15
+          },
+          "scheduled_tokens": {
+            "prefill": 16376,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 2041,
+                "padded_tokens": 2041,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 2047,
+                "padded_tokens": 2047,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 3
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 5,
+            "transfer_only": 15
+          },
+          "scheduled_tokens": {
+            "prefill": 16376,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 2041,
+                "padded_tokens": 2041,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 2047,
+                "padded_tokens": 2047,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 3
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 1,
+            "decode": 186,
+            "mixed": 4,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1000,
+            "mixed": 23,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 31
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 30
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 30
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 31
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 1
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 1
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 1,
+            "decode": 186,
+            "mixed": 4,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1000,
+            "mixed": 23,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 31
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 30
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 30
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 31
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 1
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 1
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 1,
+            "decode": 186,
+            "mixed": 4,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1000,
+            "mixed": 23,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 31
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 30
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 30
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 31
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 1
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 1
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 1,
+            "decode": 186,
+            "mixed": 4,
+            "transfer_only": 1
+          },
+          "scheduled_tokens": {
+            "handoff": 1,
+            "decode": 1000,
+            "mixed": 23,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 31
+              },
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 30
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 30
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 31
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 64
+              }
+            ],
+            "mixed": [
+              {
+                "active_tokens": 3,
+                "padded_tokens": 3,
+                "actual_reqs": 3,
+                "padded_reqs": 3,
+                "steps": 1
+              },
+              {
+                "active_tokens": 5,
+                "padded_tokens": 5,
+                "actual_reqs": 5,
+                "padded_reqs": 5,
+                "steps": 1
+              },
+              {
+                "active_tokens": 7,
+                "padded_tokens": 8,
+                "actual_reqs": 7,
+                "padded_reqs": 8,
+                "steps": 1
+              },
+              {
+                "active_tokens": 8,
+                "padded_tokens": 8,
+                "actual_reqs": 8,
+                "padded_reqs": 8,
+                "steps": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "case": "i32768-c8-o128",
+      "input_tokens": 32768,
+      "concurrency": 8,
+      "output_tokens": 128,
+      "warmup_requests_passed": 8,
+      "profiled_requests_passed": 8,
+      "rank_steps": [
+        {
+          "role": "P",
+          "rank": 0,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262136,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 56
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 1,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262136,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 56
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 2,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262136,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 56
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "P",
+          "rank": 3,
+          "phases": {
+            "prefill": 64,
+            "transfer_only": 17
+          },
+          "scheduled_tokens": {
+            "prefill": 262136,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "prefill": [
+              {
+                "active_tokens": 4088,
+                "padded_tokens": 4088,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 56
+              },
+              {
+                "active_tokens": 4096,
+                "padded_tokens": 4096,
+                "actual_reqs": 2,
+                "padded_reqs": 2,
+                "steps": 7
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 0,
+          "phases": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 8
+          },
+          "scheduled_tokens": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1016
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 1,
+          "phases": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 8
+          },
+          "scheduled_tokens": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1016
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 2,
+          "phases": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 8
+          },
+          "scheduled_tokens": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1016
+              }
+            ]
+          }
+        },
+        {
+          "role": "D",
+          "rank": 3,
+          "phases": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 8
+          },
+          "scheduled_tokens": {
+            "handoff": 8,
+            "decode": 1016,
+            "transfer_only": 0
+          },
+          "shapes": {
+            "handoff": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 8
+              }
+            ],
+            "decode": [
+              {
+                "active_tokens": 1,
+                "padded_tokens": 1,
+                "actual_reqs": 1,
+                "padded_reqs": 1,
+                "steps": 1016
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "ipc_evidence": [
+    {
+      "role": "D",
+      "rank": 0,
+      "copy_log_records": 1,
+      "logged_bytes": {
+        "92364800": 1
+      }
+    },
+    {
+      "role": "D",
+      "rank": 1,
+      "copy_log_records": 1,
+      "logged_bytes": {
+        "92364800": 1
+      }
+    },
+    {
+      "role": "D",
+      "rank": 2,
+      "copy_log_records": 1,
+      "logged_bytes": {
+        "92364800": 1
+      }
+    },
+    {
+      "role": "D",
+      "rank": 3,
+      "copy_log_records": 1,
+      "logged_bytes": {
+        "92364800": 1
+      }
+    }
+  ],
+  "raw_sha256": {
+    "D.1.nsys-rep": "302d2f7e4b4441d4b00938b7c296d70ab3bbfd236330207c256f620f313e1b32",
+    "D.2.nsys-rep": "7eb3d7682b67004068b6087a28521cce8dd5c7f2b9d1794c7d3424408cbd72f3",
+    "D.3.nsys-rep": "e1740a2553827e02b24338f325c6b317841e88961d02d04063b7fcd7408f31e4",
+    "D.4.nsys-rep": "f0f50e968006d77011fc95700942fc412014304c6e03f13ec8dca7a1eb337cc0",
+    "D.5.nsys-rep": "0998fe293b31a84c496e54fb84302130c5ec4942feb1584081888a804d2f7cf6",
+    "D.6.nsys-rep": "ca13cee4bb3177eed7ce817d8e18f7c78d304c4d8a25608ee6bc0c3a68a6b565",
+    "P.1.nsys-rep": "03f02c313ffea1bf82eb4dffeab2c02971667098d78cb2d41dcaaf417f9a3399",
+    "P.2.nsys-rep": "087a287ae0378b7d91d0486bae93ff9bf62f61cf4e6f9facfe3ffbf7e06e1222",
+    "P.3.nsys-rep": "c978c56aa930b545126cedddb88286d692a81d6baacfd962a3dc1755d266699d",
+    "P.4.nsys-rep": "9453d237bff7671007dd19d97ff30437339182a39f5c3b35d71d5982dcae757f",
+    "P.5.nsys-rep": "ada5bc319e8acb721865279861ee381be2ca24deab0be54560d7ba9567d5cee4",
+    "P.6.nsys-rep": "4c55b5dcfe8703afdf968c113e8a9c795ecd02bc02f9fc841345d65014c66aea",
+    "cases/i128-c8-o128.json": "c3e4f461529e699613c4295a041beb5213fc133ef2b56d1a90e25f62a85f11f9",
+    "cases/i2048-c8-o128.json": "be807c31679f342b0c1b268faa7eec54419da66cb8c2c06065da99fa56809cd6",
+    "cases/i32768-c8-o128.json": "e423c81885b612f4f0848c6bb9887b2c3840c0a97eb1a549794d01827c5f964a",
+    "cases/i8192-c1-o128.json": "7c5c986894b05113f917a0d1cc094cc05346ee42aaa709248d1ec9ee7c4e5ca0",
+    "cases/i8192-c32-o128.json": "0ca958cd7145bd2b43e31c015d11ad5ff97e79b05b72c5d274c16d559f34971b",
+    "cases/i8192-c8-o128.json": "03b364694721cb5cd35e712caa94ae0b6922371e3e9a4c00e570286dae0fe182",
+    "receipts/steps-i128-c8-o128-D-0.json": "bd078e3d60ffba337b344099ee56aebeff905c1bee8924403d05b8958f74087b",
+    "receipts/steps-i128-c8-o128-D-1.json": "433765c58cbecc84cb89b0e94bde77f6238bf974d4db123cd4397a9b8cd0273b",
+    "receipts/steps-i128-c8-o128-D-2.json": "6eeca043d7cc03edc302b21134ca094d346c00b02524b3e130302e926742a485",
+    "receipts/steps-i128-c8-o128-D-3.json": "066c4e295a49a9cd5f871100f908b56c4bef8c903c0674386d60c656e164a14f",
+    "receipts/steps-i128-c8-o128-P-0.json": "27fac98b97c1ba1e57f9e2d32ee94a6882c4308559363d5db8bdc4b5c2454ae3",
+    "receipts/steps-i128-c8-o128-P-1.json": "d7e5f9330a34b6d8e2b254b2b482000e7e1d24e3a2c8acf3da0688a6dcf5e3fb",
+    "receipts/steps-i128-c8-o128-P-2.json": "d497cb0167dae95dc3d05b26e2d070620d4d1ada124a155755e2b275b2c622c6",
+    "receipts/steps-i128-c8-o128-P-3.json": "116bffc51bf617cb5983cfdadb8b2513e6009cf59c9f79f2e6288f1148938baf",
+    "receipts/steps-i2048-c8-o128-D-0.json": "c4284bee8dfcb13d3afe941d0de4affa236bc87697b45a14d49b833c38a82015",
+    "receipts/steps-i2048-c8-o128-D-1.json": "3e40b3530764c7532efa6dcf453349962d7978c946442015fb7236b161ca2028",
+    "receipts/steps-i2048-c8-o128-D-2.json": "400c3e4e1484197dd002abcec69ff905365bf7f7960a7f39942f6dcabef3330f",
+    "receipts/steps-i2048-c8-o128-D-3.json": "aa82a7d4c96370426b19c8ed1d6b66ba8e28a912cae412aeed03b50c84fbbf85",
+    "receipts/steps-i2048-c8-o128-P-0.json": "f87dc71669e5b5100cf439f0b6ad533ffe5bb231fd3654566d0505eb09776c05",
+    "receipts/steps-i2048-c8-o128-P-1.json": "662d9771e78635e113e37381e96f4d629d127ff492de848ca6ac719fcf1d4f02",
+    "receipts/steps-i2048-c8-o128-P-2.json": "8161bf7977c4a2caa098539be57d42611622de91dd922fcec2512127a2ed80f5",
+    "receipts/steps-i2048-c8-o128-P-3.json": "b69541f9f9e0378e686f510d07aafae47b0bc7fc1dd7052d45f472096e08a1c0",
+    "receipts/steps-i32768-c8-o128-D-0.json": "8fcabfcfd389a12ce49be72cf2d9959edcfb46517c39f2d6a9c2515ffbe62b41",
+    "receipts/steps-i32768-c8-o128-D-1.json": "cead8b40027421dce454dbb5cc1faf810eaa1ac1e4479b7ed8745a8c729b17ea",
+    "receipts/steps-i32768-c8-o128-D-2.json": "d9b87fa6d435d61bab997dd3a9e9b0110d2e158c4d12f8623feb071ec1794105",
+    "receipts/steps-i32768-c8-o128-D-3.json": "70e34e7604d270a6d544fa87fb55aac84621ef269fecb00a435d037b96ede4e2",
+    "receipts/steps-i32768-c8-o128-P-0.json": "85d7e082f834dea4147443d12ff545983b379ab58fa69c7b274eec7caddcaefe",
+    "receipts/steps-i32768-c8-o128-P-1.json": "bba470507ecdb5284693e2c369b8f68579b527007a7080db9f7e10484499ef6d",
+    "receipts/steps-i32768-c8-o128-P-2.json": "65e11e2710c9f8e6d64450f994eb56b26e0645b0c0faf25d585b1191e40eb99b",
+    "receipts/steps-i32768-c8-o128-P-3.json": "e1f46a15cddb3ce649ecfd3c407de1d28d6dde6d23b33311ac0111b6a83e4621",
+    "receipts/steps-i8192-c1-o128-D-0.json": "2ced1ebe753500de4ee4cb15317ab21a1667b262adde1f02f8869737be0cb4cb",
+    "receipts/steps-i8192-c1-o128-D-1.json": "879d66c48f7a299461ea570fbcf8f2ede7a865164b42daf80d30f9fa30de9196",
+    "receipts/steps-i8192-c1-o128-D-2.json": "a6afd1e0b451b6938692c2f3bcb041d9e9d1630a8b8f4f8d1253e047abab3991",
+    "receipts/steps-i8192-c1-o128-D-3.json": "cf6e97a303fc5cd51b8e67e3d0b04f84d547f42c3ec9759c3897bb365dd7f9c0",
+    "receipts/steps-i8192-c1-o128-P-0.json": "ba9950e954ea11f56173f71d40928bbba3d74ed7763c09f91fec475306e717a5",
+    "receipts/steps-i8192-c1-o128-P-1.json": "d553f86b8138ea6681363026c08dd3a9de5a19ad93f9eed698bfdb302edbd470",
+    "receipts/steps-i8192-c1-o128-P-2.json": "0afa905a1a34fac1233b2d2f0a2ba406b23a889141a5bc89433fad1092e2e3a1",
+    "receipts/steps-i8192-c1-o128-P-3.json": "2c3295f7312fbb5947f0143a2013d7d46e1f1d539ca489ec7ae8963c3e6550d0",
+    "receipts/steps-i8192-c32-o128-D-0.json": "d3cc1c4178e0400c4a79bb2b4c762e1e45113011ef488181c1058ff8dcf915c0",
+    "receipts/steps-i8192-c32-o128-D-1.json": "4316cc0af4f7c35052475c3bf04069d9bcd6ea53d08a7785aab3fada475620e5",
+    "receipts/steps-i8192-c32-o128-D-2.json": "0bf68dd41b0e3ebb34f1cbb3c714aec9df179b969283696395d9d54e666bb5ee",
+    "receipts/steps-i8192-c32-o128-D-3.json": "88b9d2386c2a061ee598327e2f3d7089fe69ed341d1e9bec0a7031c83d1353d0",
+    "receipts/steps-i8192-c32-o128-P-0.json": "6064960790a308e94a1af380503d1246a182473d9e26463c6f3cc6ac53a4b3a9",
+    "receipts/steps-i8192-c32-o128-P-1.json": "78c959bee066000e8971bfc072f0a19b337135a7873c3f2b87dea7c798c0aa4e",
+    "receipts/steps-i8192-c32-o128-P-2.json": "165c5d4d0e57e4a38dae40c4bbeee7dcf2df7b4097dff6fb2c7562b841b08170",
+    "receipts/steps-i8192-c32-o128-P-3.json": "39d34c7801586219bcb4a56f601e199bcaaa63329483598f48e8707fe4587a9a",
+    "receipts/steps-i8192-c8-o128-D-0.json": "1061700ef51b7c1625fd8c787003f232ed7047f7ef4c7017cc83a469f5affd2d",
+    "receipts/steps-i8192-c8-o128-D-1.json": "72f9d78d3ed053fd584cc72608754bb9d049e5131e52ee144292a5f7d5087c80",
+    "receipts/steps-i8192-c8-o128-D-2.json": "34e68f9289f89cdd53dc0b0641b594e0e0464fa4dfd93e347cec11c9b143d55f",
+    "receipts/steps-i8192-c8-o128-D-3.json": "a99e7c922f9c3d81ad656288cd9de4e3a0b5243b1b7dc5e1d7094c97678ce500",
+    "receipts/steps-i8192-c8-o128-P-0.json": "066423774e450f497cf2b45c44228c81de05313486d39c43a31cd8f71937349a",
+    "receipts/steps-i8192-c8-o128-P-1.json": "7532863344b2584cd56c7562235e4d12014ad5ebf55217c13234aff5ef03b5fa",
+    "receipts/steps-i8192-c8-o128-P-2.json": "53157f9be1de6d4c4b3cd8e0f4310b0b3199b5d401c4ca78cba71e88da095049",
+    "receipts/steps-i8192-c8-o128-P-3.json": "b5fcbaedc7485c48dab7810d089ef352f11d8defad106c6b1625e8343b4df20c",
+    "receipts/worker-D-0.json": "719522f4ebab62b260a43807e3ef4ef6aaf6865b5cc54bc2a257239a8f4cec31",
+    "receipts/worker-D-1.json": "e79a455b77456ac728f3ed91a5167a1c937b654061646167f9581f22dfebd90c",
+    "receipts/worker-D-2.json": "9788ea616324efb3cfffc94de749568c8c34c3cb0bb2bf4c2ec1f5140afe9cc4",
+    "receipts/worker-D-3.json": "eb0218c78d424f092d90acf2e25d993f571d885ee4a939ede52ab83dee080094",
+    "receipts/worker-P-0.json": "00d496517be0e7896ae6868ea14f97d7abf7b96fd1877cdb0685ec37c1466c7c",
+    "receipts/worker-P-1.json": "a86f110db269c839f552fadbe370f2af29ce1d829118d3b8dc2801ba2bd954eb",
+    "receipts/worker-P-2.json": "34fb4a0887a89dcc73307fe398a7573d307bfcf82d335c1bf8745e22cee6e1c6",
+    "receipts/worker-P-3.json": "1df88e80b08b66f29e30dabc25a3a92b3002f009c77e51e7eb8ab2f2939a402e"
+  },
+  "profiler_latency_is_not_serving_baseline": true,
+  "weight_file_collection_sha256_historical": "9ffea2323a0e44acf7a013957adda7a2cff7dd684ff939e2b157602105b220b4",
+  "GPU_activities": 21362484,
+  "phase_rank_groups": 88,
+  "all_rank_category_count_graph_checks_passed": true,
+  "unassigned_GPU_activities_in_NVTX_sessions": 0,
+  "timed_peer_copy_counts_equal_request_counts_all_24_case_ranks": true,
+  "ipc_log_scope": "one initial warmup message per worker; timed copies independently validated in trace",
+  "generated_version_metadata": "0.1.0.dev0+gb1e3f20751",
+  "generated_version_is_source_identity": false
+}
