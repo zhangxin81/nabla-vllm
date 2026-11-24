@@ -138,3 +138,75 @@ def test_fused_sigmoid_gate_mul_fp8_strided_gate_falls_back():
 
     assert q.dtype == torch.float8_e4m3fn
     assert torch.equal(q.view(torch.uint8), ref_q.view(torch.uint8))
+
+
+@requires_cuda
+@pytest.mark.skipif(
+    not current_platform.is_cuda()
+    or not current_platform.is_device_capability_family(90),
+    reason="BF16 broadcast fusion targets Hopper",
+)
+@torch.inference_mode()
+def test_broadcast_gate_preserves_every_bf16_sigmoid_rounding():
+    """Exhaust all BF16 logits, including subnormals, infinities and NaNs."""
+    gate = torch.arange(65536, device="cuda").to(torch.uint16)
+    gate = gate.view(torch.bfloat16).reshape(-1, 1)
+    values = torch.tensor(
+        [
+            1,
+            -1,
+            0,
+            float("inf"),
+            float("-inf"),
+            2**-133,
+            2**-126,
+            torch.finfo(torch.bfloat16).max,
+        ],
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    x = values.expand(65536, -1).contiguous()
+    actual = torch.cat(
+        [
+            fused_sigmoid_gate_mul(x[i : i + 128], gate[i : i + 128])
+            for i in range(0, 65536, 128)
+        ]
+    )
+    expected = x * torch.sigmoid(gate)
+    valid = ~torch.isnan(expected)
+    assert torch.equal(actual.isnan(), expected.isnan())
+    assert torch.equal(
+        actual.view(torch.int16)[valid], expected.view(torch.int16)[valid]
+    )
+
+
+@requires_cuda
+@pytest.mark.parametrize("tokens", [1, 17, 128, 129])
+@torch.inference_mode()
+def test_broadcast_gate_graph_replays_changed_input(tokens: int):
+    """Preserve BF16 products and input ownership on offset views and replay."""
+    set_random_seed(43)
+    x = torch.randn(tokens + 1, 2560, device="cuda", dtype=torch.bfloat16)[1:]
+    gate = torch.randn(tokens + 1, 1, device="cuda", dtype=torch.bfloat16)[1:]
+    original = x.clone()
+    fused_sigmoid_gate_mul(x, gate)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = fused_sigmoid_gate_mul(x, gate)
+    gate.mul_(7)
+    graph.replay()
+    assert torch.equal(actual, x * torch.sigmoid(gate))
+    assert torch.equal(x, original)
+
+
+@requires_cuda
+@torch.inference_mode()
+def test_broadcast_gate_compilation_keeps_eager_sequence():
+    """Full-graph tracing must avoid device queries and keep ATen gate ops."""
+    set_random_seed(43)
+    x = torch.randn(3, 2560, device="cuda", dtype=torch.bfloat16)
+    gate = torch.tensor(
+        [-3.984375, -2.984375, 1.125], device="cuda", dtype=torch.bfloat16
+    ).reshape(3, 1)
+    compiled = torch.compile(fused_sigmoid_gate_mul, fullgraph=True, backend="eager")
+    assert torch.equal(compiled(x, gate), x * torch.sigmoid(gate))

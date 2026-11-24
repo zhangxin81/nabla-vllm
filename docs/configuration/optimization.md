@@ -702,3 +702,29 @@ If you observe that GPU utilization is lower than expected, CPU contention may b
 vLLM supports multiple attention backends optimized for different hardware and use cases. The backend is automatically selected based on your GPU architecture, model type, and configuration, but you can also manually specify one for optimal performance.
 
 For detailed information on available backends, their feature support, and how to configure them, see the [Attention Backend Feature Support](../design/attention_backends.md) documentation.
+
+## Qwen Shared-Expert Gate on Hopper
+
+Qwen MoE shared experts keep the original gate module and GEMM. On Hopper,
+contiguous BF16 output rows with a BF16 scalar gate use a fused sigmoid and
+multiply for 1–128 tokens and up to 4096 output columns. The sigmoid result is rounded to BF16 before the
+product, preserving the eager sequence's intermediate dtype.
+
+Selection is automatic. Larger batches, other devices or dtypes, strided
+inputs, compilation and `VLLM_BATCH_INVARIANT=1` retain the eager scalar gate
+path. Existing same-shaped attention gates keep their previous arithmetic.
+No gate module hooks, quantization methods or GEMM backend are bypassed.
+
+The shared-gate direction follows
+[SGLang #26727](https://github.com/sgl-project/sglang/pull/26727) and the existing
+[vLLM #43190](https://github.com/vllm-project/vllm/pull/43190). This adaptation
+keeps the dot product outside the fusion. Compare the complete gate chain with:
+
+```bash
+.venv/bin/python benchmarks/kernels/benchmark_shared_expert_gate.py \
+  --num-tokens 1 8 32 64 128 129 1024 --output-json gate-results.json
+```
+
+The benchmark uses real `ReplicatedLinear`, CUDA graph replay and cold-L2
+CUPTI timing. It measures the gate chain; serving performance requires a
+separate model and request benchmark.
