@@ -730,3 +730,7 @@ uv pip install 'cupti-python==13.5.0'
 The benchmark uses real `ReplicatedLinear`, CUDA graph replay and cold-L2
 CUPTI timing. It measures the gate chain; serving performance requires a
 separate model and request benchmark.
+
+The [Qwen H100 serving report](../benchmarks/nabla-vllm/qwen-shared-gate-20261125.md)
+records the incremental benefit over the already-fused H100 MoE baseline,
+four process arms, fixed quality checks and all request shapes.
