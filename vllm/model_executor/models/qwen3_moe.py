@@ -28,7 +28,6 @@ from itertools import islice
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from vllm.compilation.decorators import support_torch_compile
@@ -39,6 +38,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather,
 )
+from vllm.kernels.triton.fused_sigmoid_gate_mul import fused_sigmoid_gate_mul
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
@@ -131,7 +131,11 @@ class Qwen3MoeMLP(nn.Module):
         out, _ = self.down_proj(out)
 
         if self.expert_gate is not None:
-            out = F.sigmoid(self.expert_gate(x)[0]) * out
+            gate = self.expert_gate(x)[0]
+            if 0 < out.shape[0] <= 8 and out.shape != gate.shape:
+                out = fused_sigmoid_gate_mul(out, gate)
+            else:
+                out = torch.sigmoid(gate) * out
 
         return out
 

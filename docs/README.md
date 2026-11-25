@@ -40,6 +40,9 @@ P/D 分离和目标算子优化，按固定源码、硬件、精度和请求形�
 [后续优化验收](benchmarks/nabla-vllm/qwen38-h100-profile-optimizations-20261124.md)
 记录回退统一分桶后主干上的 MoE 融合、54 点 P/D 对照及真实输入数值检查。
 
+[Qwen 共享专家门控](benchmarks/nabla-vllm/qwen-shared-gate-20261125.md)
+记录相对已融合 MoE 基线的 40 点服务对照、组内重复波动和固定质量检查。
+
 ## 来源和贡献
 
 上游来源是 [vLLM](https://github.com/vllm-project/vllm)，沿用 Apache-2.0 许可和
