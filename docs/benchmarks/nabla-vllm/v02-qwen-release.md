@@ -3,6 +3,7 @@
 Nabla v0.2.0 在 8 张 H100 上以普通 NIXL 跑完 Qwen3.8-Flash-Next-FP8 的 **109 个计时点和 7,384 个请求，零失败**。
 相对同机上游首轮，39 个配对形状的吞吐均有提升，提升幅度的中位数为 **4.84%**。
 [v0.2.0 源码](https://github.com/zhangxin81/nabla-vllm/tree/v0.2.0)
+· [base → v0.1 → v0.2 优化总览](../../design/nabla_version_optimizations.md)
 
 | 基线 | 形状与轮次 | 输出吞吐 | TTFT p50 | TPOT p50 | E2E p95 | 吞吐低于基线 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |

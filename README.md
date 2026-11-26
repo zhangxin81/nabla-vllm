@@ -18,6 +18,9 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 
 ## v0.2 Qwen H100 性能
 
+[base → v0.1 → v0.2 优化总览](docs/design/nabla_version_optimizations.md)
+集中列出每版主要改动、SGLang/vLLM 来源、实测收益和回退情况。
+
 [v0.2 Qwen H100 端到端复测](docs/benchmarks/nabla-vllm/v02-qwen-release.md)
 完成 8×H100、4P4D、普通 NIXL 的 109 个计时点，7,384 个请求零失败。
 相对同机 base，39 个形状的吞吐提升中位数为 **4.84%**，**39/39 点均提升**；

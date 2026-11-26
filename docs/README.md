@@ -29,6 +29,8 @@ P/D 分离和目标算子优化，按固定源码、硬件、精度和请求形�
 
 ## 性能证据对应具体版本
 
+[版本优化总览](design/nabla_version_optimizations.md)：base → v0.1 → v0.2 的主要改动、来源与收益。
+
 [v0.2 Qwen H100 端到端复测](benchmarks/nabla-vllm/v02-qwen-release.md)
 包含 109 点逐轮数据和版本对比。
 
