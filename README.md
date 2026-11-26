@@ -16,6 +16,9 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 
 [文档首页](docs/README.md)提供安装、模型、P/D 和性能入口。
 
+[v0.2 Qwen H100 端到端复测](docs/benchmarks/nabla-vllm/v02-qwen-release.md)
+包含普通 NIXL 的 109 点逐轮数据，以及同机上游和 v0.1 历史数据对比。
+
 v0.1 的 [Qwen3.8 H100 算子现状](docs/benchmarks/nabla-vllm/qwen38-h100-operator-profile-20261124.md)
 记录了最新推理源码在 8×H100、4P4D、TP4／EP4、NixlConnector CUDA IPC 下的
 Prefill、纯 Decode 和 D 接续。六组负载的算子占比、真实 batch、Graph 节点和

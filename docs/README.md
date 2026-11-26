@@ -29,6 +29,9 @@ P/D 分离和目标算子优化，按固定源码、硬件、精度和请求形�
 
 ## 性能证据对应具体版本
 
+[v0.2 Qwen H100 端到端复测](benchmarks/nabla-vllm/v02-qwen-release.md)
+包含 109 点逐轮数据和版本对比。
+
 [下游 PR 集成](design/nabla_vllm_pr_integration.md)记录源提交和实际适配。
 [H100 对照](benchmarks/nabla-vllm/h100-cache-rollback-20261122.md)与
 [H20 输入准备和 CPU 计划优化](benchmarks/nabla-vllm/h20-input-host-planning-20261123.md)
