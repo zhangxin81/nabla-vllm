@@ -16,8 +16,24 @@ nabla-vllm 从 vLLM 出发，为 **Qwen3.8-Flash-Next** 和
 
 [文档首页](docs/README.md)提供安装、模型、P/D 和性能入口。
 
+## v0.2 Qwen H100 性能
+
 [v0.2 Qwen H100 端到端复测](docs/benchmarks/nabla-vllm/v02-qwen-release.md)
-包含普通 NIXL 的 109 点逐轮数据，以及同机上游和 v0.1 历史数据对比。
+完成 8×H100、4P4D、普通 NIXL 的 109 个计时点，7,384 个请求零失败。
+相对同机 base，39 个形状的吞吐提升中位数为 **4.84%**，**39/39 点均提升**；
+TTFT p50 降低中位数为 **4.70%**（36/39 点降低），TPOT p50 为 **5.11%**（39/39 点降低）。
+base 为原始 vLLM `8e45c458f6`，与 v0.2 使用同机首轮数据；v0.1 使用历史组数据。
+
+![base、v0.1、v0.2 输出吞吐对比](docs/benchmarks/nabla-vllm/v02-qwen-versions-throughput.svg)
+
+<details>
+<summary>展开 TTFT、TPOT 延迟曲线</summary>
+
+![base、v0.1、v0.2 首 token 延迟对比](docs/benchmarks/nabla-vllm/v02-qwen-versions-ttft.svg)
+
+![base、v0.1、v0.2 每 token 延迟对比](docs/benchmarks/nabla-vllm/v02-qwen-versions-tpot.svg)
+
+</details>
 
 v0.1 的 [Qwen3.8 H100 算子现状](docs/benchmarks/nabla-vllm/qwen38-h100-operator-profile-20261124.md)
 记录了最新推理源码在 8×H100、4P4D、TP4／EP4、NixlConnector CUDA IPC 下的
@@ -88,7 +104,7 @@ nabla-vllm 承接这些优化，按目标模型和硬件适配、验证，并保
 目标模型使用原始 vLLM 的缓存资源管理方式。每个已集成 PR 的验证范围见
 [PR 集成记录](docs/design/nabla_vllm_pr_integration.md)，历史测试只适用于记录中的源码。
 
-## 当前默认版本的性能对照
+## 缓存回退版本的历史性能对照
 
 修正后的缓存回退版本与未经修改的 vLLM
 `8e45c458f619dbabff879c0f53c58fd9f296e983`
