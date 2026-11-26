@@ -19,6 +19,20 @@ Nabla v0.2.0 在 8 张 H100 上以普通 NIXL 跑完 Qwen3.8-Flash-Next-FP8 的 
 0.45 秒，TPOT p50 从 8.40 ms 升到 13.80 ms。更换后缀的边界探针查询 8,448 个 token，命中 8,000，
 v0.1 下游报告记录为 8,192。
 
+## 版本对比曲线
+
+以下曲线覆盖全部 39 个相同形状的首轮数据。base 为上游 vLLM NIXL，与 v0.2 同机；
+v0.1 使用 Qwen 历史组。横轴为并发，吞吐越高越好，TTFT 和 TPOT 越低越好。
+曲线用首轮绝对值，上表对比 v0.1 的统计用三轮均值。
+
+![base、v0.1、v0.2 输出吞吐对比](v02-qwen-versions-throughput.svg)
+
+![base、v0.1、v0.2 首 token 延迟对比](v02-qwen-versions-ttft.svg)
+
+![base、v0.1、v0.2 每 token 延迟对比](v02-qwen-versions-tpot.svg)
+
+图表由仓库内 CSV 生成，复现命令：`.venv/bin/python benchmarks/plot_nabla_qwen_versions.py`。
+
 ## 测试条件
 
 - 8×H100 80GB，4P4D，两侧 TP4/EP4，FP8 main KV 和 FP8 indexer KV。Prefill chunk 为 4,096，
